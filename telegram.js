@@ -12,9 +12,6 @@ class TelegramBotManager {
         this.app = express(); // Express app for health checks
         this.port = process.env.PORT || 3000;
         
-        // Initialize cookie from environment if available
-        this.tiktokCookie = process.env.TIKTOK_COOKIE || null;
-        
         this.init();
         this.setupExpress();
     }
@@ -26,12 +23,8 @@ class TelegramBotManager {
         // Setup basic handlers
         this.setupBasicHandlers();
         
-        // Pass cookie to TikTok command if available
-        this.initializeCookieForCommands();
-        
         console.log('🤖 Telegram Bot initialized successfully!');
         console.log('📁 Commands loaded:', Array.from(this.commands.keys()));
-        console.log('🍪 TikTok Cookie:', this.tiktokCookie ? 'Loaded from .env ✅' : 'Not set ❌');
     }
 
     setupExpress() {
@@ -46,8 +39,7 @@ class TelegramBotManager {
                 timestamp: new Date().toISOString(),
                 uptime: process.uptime(),
                 bot_status: 'running',
-                commands_loaded: Array.from(this.commands.keys()),
-                cookie_status: this.tiktokCookie ? 'set' : 'not_set'
+                commands_loaded: Array.from(this.commands.keys())
             });
         });
 
@@ -82,23 +74,11 @@ class TelegramBotManager {
                     platform: process.platform
                 },
                 features: {
-                    tiktok_cookie: this.tiktokCookie ? 'enabled' : 'disabled',
-                    express_server: 'enabled'
+                    express_server: 'enabled',
+                    commands_loaded: Array.from(this.commands.keys())
                 }
             });
         });
-
-        // Cookie management endpoint (for debugging - remove in production)
-        if (process.env.NODE_ENV !== 'production') {
-            this.app.get('/debug/cookie', (req, res) => {
-                res.json({
-                    cookie_set: !!this.tiktokCookie,
-                    cookie_length: this.tiktokCookie ? this.tiktokCookie.length : 0,
-                    cookie_preview: this.tiktokCookie ? 
-                        this.tiktokCookie.substring(0, 50) + '...' : null
-                });
-            });
-        }
 
         // Start Express server
         this.app.listen(this.port, () => {
@@ -106,22 +86,6 @@ class TelegramBotManager {
             console.log(`📊 Health check available at: http://localhost:${this.port}/health`);
             console.log(`📈 Status endpoint: http://localhost:${this.port}/status`);
         });
-    }
-
-    initializeCookieForCommands() {
-        // Pass the cookie to TikTok command if it exists
-        const tiktokCommand = this.commands.get('tiktok');
-        if (tiktokCommand && this.tiktokCookie) {
-            try {
-                // Set the cookie in the TikTok plugin
-                if (tiktokCommand.tikTokPlugin && typeof tiktokCommand.tikTokPlugin.setTikTokCookie === 'function') {
-                    tiktokCommand.tikTokPlugin.setTikTokCookie(this.tiktokCookie);
-                    console.log('✅ TikTok cookie initialized from .env');
-                }
-            } catch (error) {
-                console.error('❌ Failed to initialize TikTok cookie:', error.message);
-            }
-        }
     }
 
     loadCommands() {
@@ -154,10 +118,24 @@ class TelegramBotManager {
             }
         }
 
-        // Initialize cookies after all commands are loaded
+        // Initialize any special settings after all commands are loaded
         setTimeout(() => {
-            this.initializeCookieForCommands();
+            this.initializeCommandSettings();
         }, 1000);
+    }
+
+    initializeCommandSettings() {
+        // Allow commands to perform any post-initialization setup
+        for (const [commandName, commandInstance] of this.commands) {
+            if (typeof commandInstance.postInit === 'function') {
+                try {
+                    commandInstance.postInit(this);
+                    console.log(`✅ Post-initialized: ${commandName}`);
+                } catch (error) {
+                    console.error(`❌ Failed to post-initialize ${commandName}:`, error.message);
+                }
+            }
+        }
     }
 
     setupBasicHandlers() {
@@ -197,17 +175,13 @@ class TelegramBotManager {
         
         const welcomeMessage = `🤖 *Welcome ${userName} to the Telegram Bot for Fun & Automation!*
 
-📥 *Nrmtiktok* - Download TikTok video without custom watermark or TikTok watermark
-🎨 *Wmtiktok* - Download TikTok video with custom watermark
-🍪 *Cookie Status* - ${this.tiktokCookie ? 'Enhanced features enabled ✅' : 'Basic features only ❌'}
+🎉 A versatile Telegram bot with useful commands and features! 
 
-🎉 A fun and useful Telegram bot with great functions! 😬
-
-Click the button below to explore available commands.`;
+Click the button below to explore available commands and discover what this bot can do for you.`;
 
         const keyboard = {
             inline_keyboard: [[
-                { text: '🎮 Commands', callback_data: 'show_commands' }
+                { text: '🎮 Show Commands', callback_data: 'show_commands' }
             ]]
         };
 
@@ -226,7 +200,7 @@ Click the button below to explore available commands.`;
         // Answer the callback query to remove loading state
         this.bot.answerCallbackQuery(callbackQuery.id);
 
-        // Handle different callback data
+        // Handle core bot callbacks
         if (data === 'show_commands') {
             this.showMainCommands(chatId, messageId);
         } else if (data === 'back_to_main') {
@@ -243,10 +217,14 @@ Click the button below to explore available commands.`;
             let handled = false;
             for (const [commandName, commandInstance] of this.commands) {
                 if (typeof commandInstance.handleCallback === 'function') {
-                    const result = commandInstance.handleCallback(callbackQuery, this);
-                    if (result) {
-                        handled = true;
-                        break;
+                    try {
+                        const result = commandInstance.handleCallback(callbackQuery, this);
+                        if (result) {
+                            handled = true;
+                            break;
+                        }
+                    } catch (error) {
+                        console.error(`❌ Error in ${commandName} handleCallback:`, error.message);
                     }
                 }
             }
@@ -264,9 +242,7 @@ Click the button below to explore available commands.`;
     showMainCommands(chatId, messageId) {
         const commandsMessage = `🎮 *Available Commands*
 
-Choose a category to explore:
-
-🍪 **Cookie Status:** ${this.tiktokCookie ? 'Enhanced features enabled ✅' : 'Basic features only ❌'}`;
+Choose a command to get started:`;
 
         const keyboard = {
             inline_keyboard: []
@@ -275,17 +251,28 @@ Choose a category to explore:
         // Dynamically add command buttons
         for (const [commandName, commandInstance] of this.commands) {
             if (typeof commandInstance.getMainButton === 'function') {
-                const buttonInfo = commandInstance.getMainButton();
-                if (buttonInfo) {
-                    keyboard.inline_keyboard.push([buttonInfo]);
+                try {
+                    const buttonInfo = commandInstance.getMainButton();
+                    if (buttonInfo) {
+                        keyboard.inline_keyboard.push([buttonInfo]);
+                    }
+                } catch (error) {
+                    console.error(`❌ Error getting main button for ${commandName}:`, error.message);
                 }
             }
         }
 
-        // Add placeholder for future commands
-        keyboard.inline_keyboard.push([
-            { text: '🔧 More Tools (Coming Soon)', callback_data: 'coming_soon' }
-        ]);
+        // Add placeholder for future commands if no commands are loaded
+        if (keyboard.inline_keyboard.length === 0) {
+            keyboard.inline_keyboard.push([
+                { text: '🔧 No Commands Available', callback_data: 'coming_soon' }
+            ]);
+        } else {
+            // Add a "more features coming soon" button at the end
+            keyboard.inline_keyboard.push([
+                { text: '🔧 More Tools (Coming Soon)', callback_data: 'coming_soon' }
+            ]);
+        }
 
         this.bot.editMessageText(commandsMessage, {
             chat_id: chatId,
@@ -300,12 +287,16 @@ Choose a category to explore:
         const userState = this.userStates.get(userId);
         this.userStates.delete(userId);
 
-        // If user was in a command-specific operation, go back to that command's menu
+        // If user was in a command-specific operation, try to go back to that command's menu
         if (userState && userState.commandName) {
             const command = this.commands.get(userState.commandName);
             if (command && typeof command.showCommandMenu === 'function') {
-                command.showCommandMenu(chatId, messageId);
-                return;
+                try {
+                    command.showCommandMenu(chatId, messageId);
+                    return;
+                } catch (error) {
+                    console.error(`❌ Error showing command menu for ${userState.commandName}:`, error.message);
+                }
             }
         }
 
@@ -325,10 +316,24 @@ Choose a category to explore:
         // Find the command that should handle this
         const command = this.commands.get(userState.commandName);
         if (command && typeof command.handleTextInput === 'function') {
-            command.handleTextInput(msg, userState, this);
+            try {
+                command.handleTextInput(msg, userState, this);
+            } catch (error) {
+                console.error(`❌ Error in ${userState.commandName} handleTextInput:`, error.message);
+                
+                // Clear the user state and inform them of the error
+                this.userStates.delete(userId);
+                this.bot.sendMessage(chatId, '❌ An error occurred. Please try again.', {
+                    reply_markup: {
+                        inline_keyboard: [[
+                            { text: '🏠 Back to Main Menu', callback_data: 'show_commands' }
+                        ]]
+                    }
+                });
+            }
         }
 
-        // Clear user state after handling (commands can override this by setting a new state)
+        // Clear user state after handling if it hasn't been updated by the command
         if (this.userStates.get(userId) === userState) {
             this.userStates.delete(userId);
         }
@@ -347,11 +352,62 @@ Choose a category to explore:
         this.userStates.delete(userId);
     }
 
-    // Method to update cookie at runtime
-    updateTikTokCookie(newCookie) {
-        this.tiktokCookie = newCookie;
-        this.initializeCookieForCommands();
-        console.log('✅ TikTok cookie updated at runtime');
+    // Method for commands to update their settings at runtime
+    updateCommandSettings(commandName, settings) {
+        const command = this.commands.get(commandName);
+        if (command && typeof command.updateSettings === 'function') {
+            try {
+                command.updateSettings(settings);
+                console.log(`✅ Updated settings for ${commandName}`);
+                return true;
+            } catch (error) {
+                console.error(`❌ Failed to update settings for ${commandName}:`, error.message);
+                return false;
+            }
+        }
+        return false;
+    }
+
+    // Method to get command information
+    getCommandInfo(commandName) {
+        const command = this.commands.get(commandName);
+        if (command && typeof command.getInfo === 'function') {
+            try {
+                return command.getInfo();
+            } catch (error) {
+                console.error(`❌ Failed to get info for ${commandName}:`, error.message);
+                return null;
+            }
+        }
+        return null;
+    }
+
+    // Method to reload a specific command (useful for development)
+    reloadCommand(commandName) {
+        try {
+            // Remove from require cache
+            const commandPath = path.join(__dirname, 'commands', `${commandName}.js`);
+            delete require.cache[require.resolve(commandPath)];
+            
+            // Remove old command
+            this.commands.delete(commandName);
+            
+            // Load new command
+            const CommandClass = require(commandPath);
+            const commandInstance = new CommandClass(this.bot, this);
+            
+            if (typeof commandInstance.init === 'function') {
+                commandInstance.init();
+            }
+            
+            this.commands.set(commandName, commandInstance);
+            
+            console.log(`✅ Reloaded command: ${commandName}`);
+            return true;
+        } catch (error) {
+            console.error(`❌ Failed to reload command ${commandName}:`, error.message);
+            return false;
+        }
     }
 
     // Graceful shutdown
@@ -359,6 +415,18 @@ Choose a category to explore:
         console.log('🛑 Shutting down gracefully...');
         
         try {
+            // Shutdown all commands
+            for (const [commandName, commandInstance] of this.commands) {
+                if (typeof commandInstance.shutdown === 'function') {
+                    try {
+                        await commandInstance.shutdown();
+                        console.log(`✅ ${commandName} shutdown complete`);
+                    } catch (error) {
+                        console.error(`❌ Error shutting down ${commandName}:`, error.message);
+                    }
+                }
+            }
+            
             await this.bot.stopPolling();
             console.log('✅ Bot polling stopped');
         } catch (error) {
@@ -394,6 +462,16 @@ process.on('SIGTERM', async () => {
         await global.botManager.shutdown();
     }
     process.exit(0);
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+    console.error('❌ Uncaught Exception:', error);
+    process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
 // Start the bot
