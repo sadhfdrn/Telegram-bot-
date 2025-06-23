@@ -31,7 +31,8 @@ class TikTokWatermarkPlugin {
             'TikTok 26.2.0 rv:262018 (iPhone; iOS 16.5; en_US) Cronet'
         ];
         
-        this.styles = {
+        // Keep existing built-in styles for backward compatibility
+        this.builtInStyles = {
             classic: {
                 text: 'Samuel',
                 font: 'Arial',
@@ -100,8 +101,114 @@ class TikTokWatermarkPlugin {
             }
         };
 
+        // Dynamic style modules
+        this.styleModules = new Map();
+        this.dynamicStyles = new Map();
+        
+        // Load dynamic styles on initialization
+        this.loadStyleModules();
+
         // Check FFmpeg installation on initialization
         this.checkFFmpeg();
+    }
+
+    /**
+     * Dynamically load all style modules from ../plugins/styles/
+     */
+    loadStyleModules() {
+        try {
+            const stylesDir = path.join(__dirname, '../plugins/styles');
+            
+            // Check if styles directory exists
+            if (!fs.existsSync(stylesDir)) {
+                console.warn('⚠️ Styles directory not found:', stylesDir);
+                console.log('💡 Using built-in styles only');
+                return;
+            }
+
+            const styleFiles = fs.readdirSync(stylesDir)
+                .filter(file => file.endsWith('.js'))
+                .map(file => file.replace('.js', ''));
+
+            console.log('🎨 Loading style modules:', styleFiles);
+
+            for (const styleName of styleFiles) {
+                try {
+                    const stylePath = path.join(stylesDir, `${styleName}.js`);
+                    const StyleClass = require(stylePath);
+                    const styleInstance = new StyleClass();
+                    
+                    // Store the style instance
+                    this.styleModules.set(styleName, styleInstance);
+                    
+                    // Load preset styles from the module
+                    if (typeof styleInstance.getPresetStyles === 'function') {
+                        const presetStyles = styleInstance.getPresetStyles();
+                        
+                        for (const [styleKey, styleConfig] of Object.entries(presetStyles)) {
+                            const fullStyleName = `${styleName}_${styleKey}`;
+                            this.dynamicStyles.set(fullStyleName, {
+                                ...styleConfig,
+                                module: styleName,
+                                styleClass: styleInstance,
+                                originalName: styleKey
+                            });
+                        }
+                    }
+                    
+                    console.log(`✅ Loaded style module: ${styleName}`);
+                } catch (error) {
+                    console.error(`❌ Failed to load style module ${styleName}:`, error.message);
+                }
+            }
+            
+            console.log(`🎨 Total dynamic styles loaded: ${this.dynamicStyles.size}`);
+        } catch (error) {
+            console.error('❌ Error loading style modules:', error.message);
+            console.log('💡 Falling back to built-in styles only');
+        }
+    }
+
+    /**
+     * Get all available styles (built-in + dynamic)
+     */
+    getAllStyles() {
+        const allStyles = new Map();
+        
+        // Add built-in styles first
+        for (const [styleName, styleConfig] of Object.entries(this.builtInStyles)) {
+            allStyles.set(styleName, {
+                ...styleConfig,
+                module: 'built-in',
+                originalName: styleName,
+                isBuiltIn: true
+            });
+        }
+        
+        // Add dynamic styles
+        for (const [fullStyleName, styleConfig] of this.dynamicStyles) {
+            allStyles.set(fullStyleName, styleConfig);
+        }
+        
+        return allStyles;
+    }
+
+    /**
+     * Get style by name (supports both built-in and dynamic styles)
+     */
+    getStyleByName(styleName) {
+        // Check built-in styles first
+        if (this.builtInStyles[styleName]) {
+            return {
+                ...this.builtInStyles[styleName],
+                module: 'built-in',
+                originalName: styleName,
+                isBuiltIn: true
+            };
+        }
+        
+        // Check dynamic styles
+        return this.dynamicStyles.get(styleName) || null;
     }
 
     // Check if FFmpeg is installed
@@ -384,9 +491,42 @@ class TikTokWatermarkPlugin {
         }
     }
 
-    // Simplified watermark filter for Linux compatibility
+    /**
+     * Enhanced watermark filter generation with support for dynamic styles
+     */
     generateWatermarkFilter(settings) {
-        const { text, fontSize = 24, color = 'white', opacity = 0.48, position = 'bottom-right' } = settings;
+        const { 
+            text, 
+            fontSize = 24, 
+            font = 'Arial',
+            fontFamily,
+            size,
+            color = 'white', 
+            textColor,
+            opacity = 0.48, 
+            position = 'bottom-right',
+            rotation = 0,
+            effect = 'none',
+            glassColor,
+            module,
+            styleClass,
+            isBuiltIn = false
+        } = settings;
+        
+        // Use dynamic style class if available
+        if (!isBuiltIn && styleClass && typeof styleClass.generateFilter === 'function') {
+            try {
+                console.log(`🎨 Using ${module} module filter generation`);
+                return styleClass.generateFilter(settings);
+            } catch (error) {
+                console.warn(`⚠️ ${module} filter generation failed, falling back to default:`, error.message);
+            }
+        }
+        
+        // Fallback to simplified filter for compatibility
+        const finalFontSize = fontSize || size || 24;
+        const finalColor = color || textColor || 'white';
+        const finalFont = font || fontFamily || 'Arial';
         
         const positions = {
             'top-left': 'x=50:y=50',
@@ -398,11 +538,23 @@ class TikTokWatermarkPlugin {
         
         const pos = positions[position] || positions['bottom-right'];
         
-        // Simplified filter that works across platforms
-        return `drawtext=text='${text}':fontsize=${fontSize}:fontcolor=${color}@${opacity}:${pos}:shadowcolor=black@0.5:shadowx=2:shadowy=2`;
+        // Enhanced filter with rotation support
+        let filter = `drawtext=text='${text}':fontsize=${finalFontSize}:fontcolor=${finalColor}@${opacity}:${pos}`;
+        
+        // Add shadow effect
+        filter += ':shadowcolor=black@0.5:shadowx=2:shadowy=2';
+        
+        // Add rotation if specified
+        if (rotation && rotation !== 0) {
+            // Note: FFmpeg text rotation can be complex, this is a simplified approach
+            filter += `:angle=${rotation * Math.PI / 180}`;
+        }
+        
+        console.log(`🎨 Generated ${isBuiltIn ? 'built-in' : 'dynamic'} filter:`, filter);
+        return filter;
     }
 
-    // Add watermark to video with better error handling
+    // Add watermark to video with enhanced style support
     async addWatermarkToVideo(inputPath, outputPath, watermarkSettings) {
         return new Promise((resolve, reject) => {
             // Check if input file exists
@@ -445,16 +597,34 @@ class TikTokWatermarkPlugin {
         });
     }
 
-    // Enhanced wmtiktok handler with better error messages
+    // Enhanced wmtiktok handler with dynamic style support
     async handleWmTikTok(message, args) {
         try {
             if (!args[0]) {
-                return message.reply('Please provide a TikTok URL\nUsage: wmtiktok <tiktok_url>');
+                const totalStyles = this.getAllStyles().size;
+                const builtInCount = Object.keys(this.builtInStyles).length;
+                const dynamicCount = this.dynamicStyles.size;
+                
+                return message.reply(`Please provide a TikTok URL
+Usage: wmtiktok <tiktok_url>
+
+📊 Available styles: ${totalStyles} total
+• Built-in: ${builtInCount}
+• Dynamic: ${dynamicCount} from ${this.styleModules.size} modules`);
             }
 
             const url = args[0];
             const userId = message.from || message.chat?.id || 'default';
             const userSettings = this.watermarkSettings.get(userId) || this.defaultWatermark;
+
+            // Enhance settings with module info if available
+            const enhancedSettings = { ...userSettings };
+            if (userSettings.fullStyleName) {
+                const style = this.dynamicStyles.get(userSettings.fullStyleName);
+                if (style) {
+                    Object.assign(enhancedSettings, style);
+                }
+            }
 
             await message.reply('⏳ Downloading TikTok video...');
 
@@ -462,17 +632,23 @@ class TikTokWatermarkPlugin {
                 // Download video with enhanced error handling
                 const videoPath = await this.downloadTikTokVideo(url, Boolean(this.tiktokCookie));
                 
-                await message.reply('🎨 Adding watermark...');
+                const styleInfo = enhancedSettings.module ? 
+                    `${enhancedSettings.originalName || 'custom'} (${enhancedSettings.module})` : 
+                    enhancedSettings.effect || 'default';
                 
-                // Add watermark
+                await message.reply(`🎨 Adding ${styleInfo} watermark...`);
+                
+                // Add watermark with enhanced settings
                 const outputPath = path.join(__dirname, 'temp', `watermarked_${Date.now()}.mp4`);
-                await this.addWatermarkToVideo(videoPath, outputPath, userSettings);
+                await this.addWatermarkToVideo(videoPath, outputPath, enhancedSettings);
 
                 // Send the watermarked video
                 const videoBuffer = fs.readFileSync(outputPath);
                 await message.reply(videoBuffer, { 
                     mimetype: 'video/mp4',
-                    caption: `✅ Watermarked with style: ${userSettings.effect || 'default'}\n🍪 Cookie status: ${this.getCookieStatus()}`
+                    caption: `✅ Watermarked with: ${styleInfo}
+🎨 Styles available: ${this.getAllStyles().size} total (${Object.keys(this.builtInStyles).length} built-in + ${this.dynamicStyles.size} dynamic)
+🍪 Cookie status: ${this.getCookieStatus()}`
                 });
 
                 // Clean up temp files
@@ -547,30 +723,65 @@ class TikTokWatermarkPlugin {
         }
     }
 
+    // Enhanced setWatermark handler with dynamic style support
     async handleSetWatermark(message, args) {
         try {
             const userId = message.from || message.chat?.id || 'default';
             
             if (!args[0]) {
-                const stylesList = Object.keys(this.styles).map(style => `• ${style}`).join('\n');
-                return message.reply(`🎨 Available watermark styles:\n${stylesList}\n\nUsage: setwatermark <style> [text]\nExample: setwatermark neon MyName`);
+                const allStyles = this.getAllStyles();
+                const builtInStyles = Object.keys(this.builtInStyles);
+                const dynamicStyles = Array.from(this.dynamicStyles.keys());
+                
+                let stylesList = '**Built-in styles:**\n';
+                stylesList += builtInStyles.map(style => `• ${style}`).join('\n');
+                
+                if (dynamicStyles.length > 0) {
+                    stylesList += '\n\n**Dynamic styles:**\n';
+                    stylesList += dynamicStyles.map(style => `• ${style}`).join('\n');
+                }
+                
+                return message.reply(`🎨 Available watermark styles (${allStyles.size} total):\n\n${stylesList}\n\nUsage: setwatermark <style> [text]\nExample: setwatermark neon MyName`);
             }
 
             const styleName = args[0].toLowerCase();
             const customText = args.slice(1).join(' ');
 
-            if (!this.styles[styleName]) {
+            // Check both built-in and dynamic styles
+            let selectedStyle = null;
+            
+            // Check built-in styles first
+            if (this.builtInStyles[styleName]) {
+                selectedStyle = {
+                    ...this.builtInStyles[styleName],
+                    module: 'built-in',
+                    originalName: styleName,
+                    isBuiltIn: true
+                };
+            } 
+            // Check dynamic styles
+            else if (this.dynamicStyles.has(styleName)) {
+                selectedStyle = { ...this.dynamicStyles.get(styleName) };
+            }
+
+            if (!selectedStyle) {
                 return message.reply('❌ Invalid style. Use setwatermark without arguments to see available styles.');
             }
 
-            const newSettings = { ...this.styles[styleName] };
+            // Apply custom text if provided
             if (customText) {
-                newSettings.text = customText;
+                selectedStyle.text = customText;
             }
 
-            this.watermarkSettings.set(userId, newSettings);
+            // Store full style name for dynamic styles
+            if (!selectedStyle.isBuiltIn) {
+                selectedStyle.fullStyleName = styleName;
+            }
+
+            this.watermarkSettings.set(userId, selectedStyle);
             
-            await message.reply(`✅ Watermark set to "${styleName}" style${customText ? ` with text: "${customText}"` : ''}`);
+            const styleSource = selectedStyle.isBuiltIn ? 'built-in' : `${selectedStyle.module} module`;
+            await message.reply(`✅ Watermark set to "${selectedStyle.originalName || styleName}" style from ${styleSource}${customText ? ` with text: "${customText}"` : ''}`);
 
         } catch (error) {
             console.error('Error in setwatermark command:', error);
@@ -578,17 +789,114 @@ class TikTokWatermarkPlugin {
         }
     }
 
-    // Initialize plugin
+    // Initialize plugin with enhanced logging
     init(bot) {
         bot.command('wmtiktok', (message, args) => this.handleWmTikTok(message, args));
         bot.command('setwatermark', (message, args) => this.handleSetWatermark(message, args));
         bot.command('setcookie', (message, args) => this.handleSetCookie(message, args));
         bot.command('cookiestatus', (message, args) => this.handleCookieStatus(message, args));
         
-        console.log('🔧 Enhanced TikTok Plugin initialized with fixes');
-        console.log('🛡️ Multiple download fallback methods enabled');
-        console.log('🍪 Cookie support available for better success rates');
-        console.log('🎬 FFmpeg compatibility improved');
+        const totalStyles = this.getAllStyles().size;
+        const builtInCount = Object.keys(this.builtInStyles).length;
+        const dynamicCount = this.dynamicStyles.size;
+        
+        console.log('🔧 Enhanced TikTok Plugin initialized with dynamic style support');
+        console.log(`📊 Style stats: ${totalStyles} total (${builtInCount} built-in + ${dynamicCount} dynamic from ${this.styleModules.size} modules)`);
+        
+        // Log loaded modules
+        if (this.styleModules.size > 0) {
+            console.log(`📦 Loaded modules: ${Array.from(this.styleModules.keys()).join(', ')}`);
+        }
+        
+        console.log(`🍪 Cookie status: ${this.getCookieStatus()}`);
+    }
+
+    // Enhanced nrmtiktok handler (download without watermark)
+    async handleNrmTikTok(message, args) {
+        try {
+            if (!args[0]) {
+                return message.reply(`Please provide a TikTok URL
+Usage: nrmtiktok <tiktok_url>
+
+This downloads the video without any watermark (clean video).`);
+            }
+
+            const url = args[0];
+
+            await message.reply('⏳ Downloading clean TikTok video...');
+
+            try {
+                // Download video with enhanced error handling
+                const videoPath = await this.downloadTikTokVideo(url, Boolean(this.tiktokCookie));
+                
+                // Send the clean video without watermark
+                const videoBuffer = fs.readFileSync(videoPath);
+                await message.reply(videoBuffer, { 
+                    mimetype: 'video/mp4',
+                    caption: `✅ Clean video downloaded (no watermark)
+🍪 Cookie status: ${this.getCookieStatus()}`
+                });
+
+                // Clean up temp file
+                if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
+
+            } catch (downloadError) {
+                let errorMessage = '❌ Download failed: ';
+                
+                if (downloadError.message.includes('403')) {
+                    errorMessage += 'TikTok blocked the request. Try:\n• Using a different video URL\n• Setting a TikTok cookie with "setcookie" command\n• Waiting a few minutes before trying again';
+                } else if (downloadError.message.includes('timeout')) {
+                    errorMessage += 'Download timed out. The video might be too large or TikTok servers are slow. Try again later.';
+                } else if (downloadError.message.includes('No video URL')) {
+                    errorMessage += 'Could not find video in TikTok response. The video might be private or deleted.';
+                } else {
+                    errorMessage += downloadError.message;
+                }
+                
+                await message.reply(errorMessage);
+            }
+
+        } catch (error) {
+            console.error('Error in nrmtiktok command:', error);
+            await message.reply(`❌ Unexpected error: ${error.message}`);
+        }
+    }
+
+    // Helper method to clean old temp files
+    cleanTempFiles() {
+        try {
+            const tempDir = path.join(__dirname, 'temp');
+            if (fs.existsSync(tempDir)) {
+                const files = fs.readdirSync(tempDir);
+                const now = Date.now();
+                const maxAge = 60 * 60 * 1000; // 1 hour
+
+                for (const file of files) {
+                    const filePath = path.join(tempDir, file);
+                    const stats = fs.statSync(filePath);
+                    
+                    if (now - stats.mtime.getTime() > maxAge) {
+                        fs.unlinkSync(filePath);
+                        console.log(`🗑️ Cleaned old temp file: ${file}`);
+                    }
+                }
+            }
+        } catch (error) {
+            console.warn('⚠️ Error cleaning temp files:', error.message);
+        }
+    }
+
+    // Enhanced error handling for network issues
+    async handleNetworkError(error, retryCount = 0, maxRetries = 2) {
+        const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+        
+        if (retryCount < maxRetries) {
+            console.log(`🔄 Retrying after network error (attempt ${retryCount + 1}/${maxRetries + 1}): ${error.message}`);
+            await delay(2000 * (retryCount + 1)); // Exponential backoff
+            return true; // Indicate retry should happen
+        }
+        
+        return false; // No more retries
     }
 }
 
