@@ -79,7 +79,7 @@ class TikTokCommand {
     }
 
     // NEW METHOD: Handle text messages when user is in a state
-    async handleMessage(message) {
+    async handleTextInput(message, userState, botManager){
         const userId = message.from.id;
         const chatId = message.chat.id;
         const text = message.text;
