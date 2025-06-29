@@ -1,5 +1,5 @@
+const puppeteer = require('puppeteer');
 const axios = require('axios');
-const cheerio = require('cheerio');
 const { URL } = require('url');
 
 class AnipahePlugin {
@@ -10,50 +10,223 @@ class AnipahePlugin {
         this.baseUrl = 'https://animepahe.ru';
         this.apiUrl = 'https://animepahe.ru/api';
         this.description = 'High-quality anime downloads with minimal ads';
-        this.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'application/json, text/javascript, */*; q=0.01',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Sec-Fetch-Dest': 'empty',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-origin',
-            'X-Requested-With': 'XMLHttpRequest'
+        
+        this.browser = null;
+        this.page = null;
+        this.isInitialized = false;
+        
+        // Puppeteer configuration
+        this.puppeteerConfig = {
+            headless: true,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process',
+                '--disable-gpu',
+                '--disable-web-security',
+                '--disable-features=VizDisplayCompositor',
+                '--disable-extensions',
+                '--disable-plugins',
+                '--disable-images', // Speed up loading
+                '--disable-javascript', // We'll enable when needed
+                '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            ],
+            ignoreDefaultArgs: ['--enable-automation'],
+            ignoreHTTPSErrors: true,
+            timeout: 30000
         };
+    }
+
+    async initializeBrowser() {
+        if (this.isInitialized && this.browser && this.page) {
+            return;
+        }
+
+        try {
+            console.log('Initializing Puppeteer browser...');
+            this.browser = await puppeteer.launch(this.puppeteerConfig);
+            this.page = await this.browser.newPage();
+
+            // Set viewport
+            await this.page.setViewport({
+                width: 1920,
+                height: 1080,
+                deviceScaleFactor: 1,
+                hasTouch: false,
+                isLandscape: true,
+                isMobile: false,
+            });
+
+            // Set additional headers
+            await this.page.setExtraHTTPHeaders({
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Cache-Control': 'max-age=0',
+                'DNT': '1',
+                'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                'Sec-Ch-Ua-Mobile': '?0',
+                'Sec-Ch-Ua-Platform': '"Windows"',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Upgrade-Insecure-Requests': '1'
+            });
+
+            // Block unnecessary resources to speed up
+            await this.page.setRequestInterception(true);
+            this.page.on('request', (request) => {
+                const resourceType = request.resourceType();
+                const url = request.url();
+                
+                // Block ads, trackers, and unnecessary resources
+                if (resourceType === 'image' || 
+                    resourceType === 'stylesheet' || 
+                    resourceType === 'font' ||
+                    url.includes('google-analytics') ||
+                    url.includes('googletagmanager') ||
+                    url.includes('facebook') ||
+                    url.includes('twitter') ||
+                    url.includes('ads') ||
+                    url.includes('doubleclick')) {
+                    request.abort();
+                } else {
+                    request.continue();
+                }
+            });
+
+            // Handle console logs and errors
+            this.page.on('console', msg => {
+                if (msg.type() === 'error') {
+                    console.log('Browser console error:', msg.text());
+                }
+            });
+
+            // Test connection
+            await this.page.goto(this.baseUrl, { 
+                waitUntil: 'domcontentloaded',
+                timeout: 30000 
+            });
+
+            // Wait for potential Cloudflare challenge
+            await this.waitForCloudflare();
+
+            this.isInitialized = true;
+            console.log('Puppeteer browser initialized successfully');
+        } catch (error) {
+            console.error('Failed to initialize Puppeteer:', error.message);
+            await this.closeBrowser();
+            throw new Error(`Browser initialization failed: ${error.message}`);
+        }
+    }
+
+    async waitForCloudflare() {
+        try {
+            // Wait for Cloudflare challenge to complete
+            await this.page.waitForSelector('body', { timeout: 10000 });
+            
+            // Check if we're on a Cloudflare challenge page
+            const isCloudflare = await this.page.evaluate(() => {
+                return document.title.includes('Cloudflare') || 
+                       document.body.textContent.includes('Checking your browser') ||
+                       document.body.textContent.includes('DDoS protection');
+            });
+
+            if (isCloudflare) {
+                console.log('Cloudflare challenge detected, waiting...');
+                // Wait for the challenge to complete (usually takes 5-10 seconds)
+                await this.page.waitForNavigation({ 
+                    waitUntil: 'domcontentloaded', 
+                    timeout: 15000 
+                });
+                console.log('Cloudflare challenge completed');
+            }
+        } catch (error) {
+            console.log('Cloudflare check completed or timed out:', error.message);
+        }
     }
 
     async search(query, page = 1) {
         try {
-            // Anipahe uses an API endpoint for search
-            const searchUrl = `${this.apiUrl}?m=search&q=${encodeURIComponent(query)}`;
-            
-            const response = await axios.get(searchUrl, {
-                headers: this.headers,
-                timeout: 10000
+            await this.initializeBrowser();
+            console.log(`Searching Anipahe for: ${query}`);
+
+            // Navigate to search page
+            const searchUrl = `${this.baseUrl}/?s=${encodeURIComponent(query)}`;
+            await this.page.goto(searchUrl, { 
+                waitUntil: 'domcontentloaded',
+                timeout: 30000 
             });
 
-            const data = response.data;
-            const results = [];
+            // Wait for search results to load
+            await this.page.waitForSelector('.anime-item, .search-result, .item', { timeout: 10000 });
 
-            if (data && data.data && Array.isArray(data.data)) {
-                data.data.forEach(anime => {
-                    results.push({
-                        id: anime.session,
-                        title: anime.title,
-                        url: `${this.baseUrl}/anime/${anime.session}`,
-                        image: anime.poster,
-                        year: anime.year,
-                        episodes: anime.episodes,
-                        type: anime.type || 'TV',
-                        status: anime.status || 'Unknown',
-                        score: anime.score
-                    });
-                });
-            }
+            // Extract search results
+            const results = await this.page.evaluate(() => {
+                const items = [];
+                const selectors = [
+                    '.anime-item',
+                    '.search-result',
+                    '.item',
+                    '.anime-list-item'
+                ];
 
-            return results;
+                for (const selector of selectors) {
+                    const elements = document.querySelectorAll(selector);
+                    if (elements.length > 0) {
+                        elements.forEach(element => {
+                            const titleElement = element.querySelector('.title a, .anime-title a, a[title]');
+                            const imageElement = element.querySelector('.poster img, .anime-poster img, img');
+                            
+                            if (titleElement) {
+                                const title = titleElement.textContent.trim();
+                                const url = titleElement.href;
+                                const image = imageElement ? (imageElement.dataset.src || imageElement.src) : null;
+                                
+                                // Extract additional info
+                                const episodeElement = element.querySelector('.episode, .latest-episode');
+                                const typeElement = element.querySelector('.type, .anime-type');
+                                const yearElement = element.querySelector('.year, .anime-year');
+                                const statusElement = element.querySelector('.status, .anime-status');
+
+                                if (title && url) {
+                                    items.push({
+                                        title: title,
+                                        url: url,
+                                        image: image,
+                                        episodes: episodeElement ? parseInt(episodeElement.textContent.match(/\d+/)?.[0]) : null,
+                                        type: typeElement ? typeElement.textContent.trim() : 'TV',
+                                        year: yearElement ? parseInt(yearElement.textContent.match(/\d{4}/)?.[0]) : null,
+                                        status: statusElement ? statusElement.textContent.trim() : 'Unknown'
+                                    });
+                                }
+                            }
+                        });
+                        break; // Found results with this selector
+                    }
+                }
+                return items;
+            });
+
+            // Process results
+            const processedResults = results.map(item => ({
+                id: this.extractAnimeId(item.url),
+                title: item.title,
+                url: item.url,
+                image: item.image,
+                year: item.year,
+                episodes: item.episodes,
+                type: item.type,
+                status: item.status
+            }));
+
+            console.log(`Found ${processedResults.length} results for "${query}"`);
+            return processedResults;
+
         } catch (error) {
             console.error(`Anipahe search error:`, error.message);
             throw new Error(`Search failed: ${error.message}`);
@@ -62,6 +235,8 @@ class AnipahePlugin {
 
     async getAnimeDetails(animeId) {
         try {
+            await this.initializeBrowser();
+            
             let detailUrl;
             if (animeId.startsWith('http')) {
                 detailUrl = animeId;
@@ -70,63 +245,104 @@ class AnipahePlugin {
                 detailUrl = `${this.baseUrl}/anime/${animeId}`;
             }
 
-            // Get anime info from API
-            const apiUrl = `${this.apiUrl}?m=release&id=${animeId}&sort=episode_asc&page=1`;
+            console.log(`Getting details for: ${detailUrl}`);
             
-            const [pageResponse, apiResponse] = await Promise.all([
-                axios.get(detailUrl, { headers: this.headers, timeout: 10000 }),
-                axios.get(apiUrl, { headers: this.headers, timeout: 10000 })
-            ]);
-
-            const $ = cheerio.load(pageResponse.data);
-            const apiData = apiResponse.data;
-
-            // Extract details from page
-            const title = $('.title-wrapper h1').text().trim() || 
-                         $('.anime-title').text().trim();
-            
-            const description = $('.anime-summary').text().trim() || 
-                              $('.synopsis p').text().trim();
-            
-            const image = $('.anime-poster img').attr('src') || 
-                         $('.poster img').attr('data-src');
-
-            // Extract additional metadata
-            const genres = [];
-            $('.anime-genre a, .genre a').each((i, el) => {
-                genres.push($(el).text().trim());
+            await this.page.goto(detailUrl, { 
+                waitUntil: 'domcontentloaded',
+                timeout: 30000 
             });
 
-            const year = $('.anime-year').text().trim() || 
-                        $('.year').text().trim();
+            // Wait for content to load
+            await this.page.waitForSelector('.anime-title, .title-wrapper h1, h1', { timeout: 10000 });
 
-            const status = $('.anime-status').text().trim() || 
-                          $('.status').text().trim();
+            // Extract anime details
+            const details = await this.page.evaluate(() => {
+                // Try multiple selectors for each field
+                const getTextContent = (selectors) => {
+                    for (const selector of selectors) {
+                        const element = document.querySelector(selector);
+                        if (element) return element.textContent.trim();
+                    }
+                    return '';
+                };
 
-            const type = $('.anime-type').text().trim() || 
-                        $('.type').text().trim();
+                const getImageSrc = (selectors) => {
+                    for (const selector of selectors) {
+                        const element = document.querySelector(selector);
+                        if (element) return element.src || element.dataset.src;
+                    }
+                    return '';
+                };
 
-            const score = $('.anime-score').text().trim() || 
-                         $('.score').text().trim();
+                const title = getTextContent([
+                    '.title-wrapper h1',
+                    '.anime-title',
+                    '.anime-info h1',
+                    'h1'
+                ]);
 
-            // Get episode count from API data
-            let episodeCount = 0;
-            if (apiData && apiData.total) {
-                episodeCount = apiData.total;
-            }
+                const description = getTextContent([
+                    '.anime-summary',
+                    '.synopsis p',
+                    '.description',
+                    '.anime-desc'
+                ]);
+
+                const image = getImageSrc([
+                    '.anime-poster img',
+                    '.poster img',
+                    '.anime-cover img',
+                    '.cover img'
+                ]);
+
+                // Extract genres
+                const genres = [];
+                const genreElements = document.querySelectorAll('.anime-genre a, .genre a, .genres a');
+                genreElements.forEach(el => {
+                    genres.push(el.textContent.trim());
+                });
+
+                const year = getTextContent([
+                    '.anime-year',
+                    '.year',
+                    '.release-year'
+                ]);
+
+                const status = getTextContent([
+                    '.anime-status',
+                    '.status',
+                    '.anime-info .status'
+                ]);
+
+                const type = getTextContent([
+                    '.anime-type',
+                    '.type',
+                    '.anime-info .type'
+                ]);
+
+                const score = getTextContent([
+                    '.anime-score',
+                    '.score',
+                    '.rating'
+                ]);
+
+                return {
+                    title,
+                    description,
+                    image,
+                    genres,
+                    year: year ? parseInt(year.match(/\d{4}/)?.[0]) : null,
+                    status,
+                    type: type || 'TV',
+                    rating: score
+                };
+            });
 
             return {
                 id: animeId,
-                title: title,
-                description: description,
-                image: image,
-                genres: genres,
-                year: year,
-                status: status,
-                type: type,
-                episodes: episodeCount,
-                rating: score
+                ...details
             };
+
         } catch (error) {
             console.error(`Anipahe details error:`, error.message);
             throw new Error(`Failed to get anime details: ${error.message}`);
@@ -135,43 +351,17 @@ class AnipahePlugin {
 
     async getPopular(page = 1) {
         try {
-            const popularUrl = `${this.baseUrl}`;
+            await this.initializeBrowser();
             
-            const response = await axios.get(popularUrl, {
-                headers: this.headers,
-                timeout: 10000
+            await this.page.goto(this.baseUrl, { 
+                waitUntil: 'domcontentloaded',
+                timeout: 30000 
             });
 
-            const $ = cheerio.load(response.data);
-            const results = [];
+            // Wait for popular section to load
+            await this.page.waitForSelector('.anime-item, .popular .item', { timeout: 10000 });
 
-            $('.latest-update .anime-item, .popular .anime-item').each((index, element) => {
-                const $el = $(element);
-                const titleElement = $el.find('.title a');
-                const imageElement = $el.find('.poster img');
-                
-                const title = titleElement.text().trim();
-                const url = titleElement.attr('href');
-                const image = imageElement.attr('data-src') || imageElement.attr('src');
-                
-                // Extract metadata
-                const episode = $el.find('.episode').text().trim();
-                const type = $el.find('.type').text().trim();
-
-                if (title && url) {
-                    results.push({
-                        id: this.extractAnimeId(url),
-                        title: title,
-                        url: url.startsWith('http') ? url : this.baseUrl + url,
-                        image: image,
-                        episodes: episode ? parseInt(episode.match(/\d+/)?.[0]) : null,
-                        type: type || 'TV',
-                        status: 'Unknown'
-                    });
-                }
-            });
-
-            return results;
+            return await this.extractAnimeList();
         } catch (error) {
             console.error(`Anipahe popular error:`, error.message);
             throw new Error(`Failed to get popular anime: ${error.message}`);
@@ -180,49 +370,163 @@ class AnipahePlugin {
 
     async getLatest(page = 1) {
         try {
-            const latestUrl = `${this.baseUrl}`;
+            await this.initializeBrowser();
             
-            const response = await axios.get(latestUrl, {
-                headers: this.headers,
-                timeout: 10000
+            await this.page.goto(this.baseUrl, { 
+                waitUntil: 'domcontentloaded',
+                timeout: 30000 
             });
 
-            const $ = cheerio.load(response.data);
-            const results = [];
+            // Wait for latest section to load
+            await this.page.waitForSelector('.anime-item, .latest .item', { timeout: 10000 });
 
-            $('.latest-update .anime-item').each((index, element) => {
-                const $el = $(element);
-                const titleElement = $el.find('.title a');
-                const imageElement = $el.find('.poster img');
-                
-                const title = titleElement.text().trim();
-                const url = titleElement.attr('href');
-                const image = imageElement.attr('data-src') || imageElement.attr('src');
-                
-                // Extract metadata
-                const episode = $el.find('.episode').text().trim();
-                const type = $el.find('.type').text().trim();
-
-                if (title && url) {
-                    results.push({
-                        id: this.extractAnimeId(url),
-                        title: title,
-                        url: url.startsWith('http') ? url : this.baseUrl + url,
-                        image: image,
-                        episodes: episode ? parseInt(episode.match(/\d+/)?.[0]) : null,
-                        type: type || 'TV',
-                        status: 'Ongoing'
-                    });
-                }
-            });
-
-            return results;
+            return await this.extractAnimeList();
         } catch (error) {
             console.error(`Anipahe latest error:`, error.message);
             throw new Error(`Failed to get latest anime: ${error.message}`);
         }
     }
 
+    async extractAnimeList() {
+        return await this.page.evaluate(() => {
+            const items = [];
+            const selectors = [
+                '.anime-item',
+                '.item',
+                '.anime-list-item'
+            ];
+
+            for (const selector of selectors) {
+                const elements = document.querySelectorAll(selector);
+                if (elements.length > 0) {
+                    elements.forEach(element => {
+                        const titleElement = element.querySelector('.title a, .anime-title a, a[title]');
+                        const imageElement = element.querySelector('.poster img, .anime-poster img, img');
+                        
+                        if (titleElement) {
+                            const title = titleElement.textContent.trim();
+                            const url = titleElement.href;
+                            const image = imageElement ? (imageElement.dataset.src || imageElement.src) : null;
+                            
+                            // Extract additional info
+                            const episodeElement = element.querySelector('.episode, .latest-episode');
+                            const typeElement = element.querySelector('.type, .anime-type');
+
+                            if (title && url) {
+                                items.push({
+                                    title: title,
+                                    url: url,
+                                    image: image,
+                                    episodes: episodeElement ? parseInt(episodeElement.textContent.match(/\d+/)?.[0]) : null,
+                                    type: typeElement ? typeElement.textContent.trim() : 'TV',
+                                    status: 'Unknown'
+                                });
+                            }
+                        }
+                    });
+                    break; // Found results with this selector
+                }
+            }
+            return items;
+        }).then(results => {
+            return results.map(item => ({
+                id: this.extractAnimeId(item.url),
+                title: item.title,
+                url: item.url,
+                image: item.image,
+                episodes: item.episodes,
+                type: item.type,
+                status: item.status
+            }));
+        });
+    }
+
+    async getEpisodeList(animeId) {
+        try {
+            await this.initializeBrowser();
+            
+            const animeUrl = animeId.startsWith('http') ? animeId : `${this.baseUrl}/anime/${animeId}`;
+            
+            await this.page.goto(animeUrl, { 
+                waitUntil: 'domcontentloaded',
+                timeout: 30000 
+            });
+
+            // Wait for episode list to load
+            await this.page.waitForSelector('.episode-list, .episodes', { timeout: 10000 });
+
+            const episodes = await this.page.evaluate(() => {
+                const episodeElements = document.querySelectorAll('.episode-item, .episode, .ep-item');
+                const episodes = [];
+                
+                episodeElements.forEach((element, index) => {
+                    const episodeLink = element.querySelector('a');
+                    const episodeNumber = element.textContent.match(/\d+/)?.[0] || (index + 1).toString();
+                    
+                    if (episodeLink) {
+                        episodes.push({
+                            number: parseInt(episodeNumber),
+                            title: `Episode ${episodeNumber}`,
+                            url: episodeLink.href
+                        });
+                    }
+                });
+                
+                return episodes.sort((a, b) => a.number - b.number);
+            });
+
+            return episodes;
+        } catch (error) {
+            console.error(`Anipahe episode list error:`, error.message);
+            throw new Error(`Failed to get episode list: ${error.message}`);
+        }
+    }
+
+    extractAnimeId(url) {
+        const matches = url.match(/\/anime\/([^\/\?]+)/);
+        return matches ? matches[1] : url.split('/').pop().split('?')[0];
+    }
+
+    async checkAvailability() {
+        try {
+            await this.initializeBrowser();
+            return true;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    async closeBrowser() {
+        try {
+            if (this.page) {
+                await this.page.close();
+                this.page = null;
+            }
+            if (this.browser) {
+                await this.browser.close();
+                this.browser = null;
+            }
+            this.isInitialized = false;
+            console.log('Browser closed successfully');
+        } catch (error) {
+            console.error('Error closing browser:', error.message);
+        }
+    }
+
+    // Cleanup method to be called when the plugin is destroyed
+    async cleanup() {
+        await this.closeBrowser();
+    }
+
+    getSupportedQualities() {
+        return ['1080p', '720p', '480p', '360p'];
+    }
+
+    getSupportedTypes() {
+        return ['sub'];
+    }
+
+    // Helper methods for download functionality
     async downloadSeason(animeId, quality = '1080p', type = 'sub') {
         try {
             const episodes = await this.getEpisodeList(animeId);
@@ -245,7 +549,7 @@ class AnipahePlugin {
                 if (!episode) continue;
 
                 try {
-                    const downloadLink = await this.getDownloadLink(episode.session, quality);
+                    const downloadLink = await this.getDownloadLink(episode.url, quality);
 
                     if (downloadLink) {
                         downloadLinks.push({
@@ -253,13 +557,11 @@ class AnipahePlugin {
                             title: episode.title,
                             url: downloadLink,
                             quality: quality,
-                            type: type,
-                            size: episode.filesize || 'Unknown'
+                            type: type
                         });
                     }
                 } catch (episodeError) {
                     console.error(`Error processing episode ${episodeNum}:`, episodeError.message);
-                    // Continue with other episodes
                 }
             }
 
@@ -270,90 +572,49 @@ class AnipahePlugin {
         }
     }
 
-    async getEpisodeList(animeId) {
+    async getDownloadLink(episodeUrl, quality = '1080p') {
         try {
-            const episodes = [];
-            let page = 1;
-            let hasMore = true;
+            await this.initializeBrowser();
+            
+            await this.page.goto(episodeUrl, { 
+                waitUntil: 'domcontentloaded',
+                timeout: 30000 
+            });
 
-            while (hasMore) {
-                const apiUrl = `${this.apiUrl}?m=release&id=${animeId}&sort=episode_asc&page=${page}`;
+            // Wait for download section to load
+            await this.page.waitForSelector('.download-links, .resolutions', { timeout: 10000 });
+
+            const downloadLinks = await this.page.evaluate((requestedQuality) => {
+                const links = {};
+                const downloadElements = document.querySelectorAll('.download-links a, .resolutions a');
                 
-                const response = await axios.get(apiUrl, {
-                    headers: this.headers,
-                    timeout: 10000
+                downloadElements.forEach(element => {
+                    const text = element.textContent.toLowerCase();
+                    const href = element.href;
+                    
+                    if (text.includes('1080') && href) {
+                        links['1080p'] = href;
+                    } else if (text.includes('720') && href) {
+                        links['720p'] = href;
+                    } else if (text.includes('480') && href) {
+                        links['480p'] = href;
+                    } else if (text.includes('360') && href) {
+                        links['360p'] = href;
+                    }
                 });
-
-                const data = response.data;
-
-                if (data && data.data && Array.isArray(data.data)) {
-                    data.data.forEach(episode => {
-                        episodes.push({
-                            session: episode.session,
-                            number: episode.episode,
-                            title: `Episode ${episode.episode}`,
-                            snapshot: episode.snapshot,
-                            filesize: episode.filesize,
-                            duration: episode.duration
-                        });
-                    });
-
-                    // Check if there are more pages
-                    hasMore = data.current_page < data.last_page;
-                    page++;
-                } else {
-                    hasMore = false;
-                }
-            }
-
-            return episodes.sort((a, b) => a.number - b.number);
-        } catch (error) {
-            console.error(`Anipahe episode list error:`, error.message);
-            throw new Error(`Failed to get episode list: ${error.message}`);
-        }
-    }
-
-    async getDownloadLink(episodeSession, quality = '1080p') {
-        try {
-            // Get episode page
-            const episodeUrl = `${this.baseUrl}/play/${episodeSession}`;
-            
-            const response = await axios.get(episodeUrl, {
-                headers: this.headers,
-                timeout: 10000
-            });
-
-            const $ = cheerio.load(response.data);
-            
-            // Extract download links from the page
-            const downloadLinks = {};
-            
-            $('.download-links a, .resolutions a').each((i, el) => {
-                const $link = $(el);
-                const qualityText = $link.text().toLowerCase();
-                const href = $link.attr('href');
                 
-                if (href && qualityText.includes('1080')) {
-                    downloadLinks['1080p'] = href;
-                } else if (href && qualityText.includes('720')) {
-                    downloadLinks['720p'] = href;
-                } else if (href && qualityText.includes('480')) {
-                    downloadLinks['480p'] = href;
-                } else if (href && qualityText.includes('360')) {
-                    downloadLinks['360p'] = href;
-                }
-            });
+                return links;
+            }, quality);
 
             // Return requested quality or best available
             if (downloadLinks[quality]) {
-                return await this.resolveDownloadLink(downloadLinks[quality]);
+                return downloadLinks[quality];
             }
 
-            // Fallback to best available quality
             const priorities = ['1080p', '720p', '480p', '360p'];
             for (const q of priorities) {
                 if (downloadLinks[q]) {
-                    return await this.resolveDownloadLink(downloadLinks[q]);
+                    return downloadLinks[q];
                 }
             }
 
@@ -361,260 +622,6 @@ class AnipahePlugin {
         } catch (error) {
             console.error(`Anipahe download link error:`, error.message);
             throw new Error(`Failed to get download link: ${error.message}`);
-        }
-    }
-
-    async resolveDownloadLink(intermediateUrl) {
-        try {
-            // Some download links might redirect through intermediate pages
-            if (intermediateUrl.includes('kwik') || intermediateUrl.includes('redirect')) {
-                const response = await axios.get(intermediateUrl, {
-                    headers: this.headers,
-                    timeout: 10000,
-                    maxRedirects: 0,
-                    validateStatus: (status) => status === 302 || status === 301 || status === 200
-                });
-
-                if (response.status === 302 || response.status === 301) {
-                    return response.headers.location;
-                }
-
-                // Parse page for direct link if needed
-                const $ = cheerio.load(response.data);
-                const directLink = $('a[href*=".mp4"], a[href*=".mkv"]').attr('href');
-                
-                if (directLink) {
-                    return directLink;
-                }
-            }
-
-            return intermediateUrl;
-        } catch (error) {
-            console.error(`Link resolution error:`, error.message);
-            return intermediateUrl; // Return original if resolution fails
-        }
-    }
-
-    extractAnimeId(url) {
-        // Extract anime ID from URL
-        const matches = url.match(/\/anime\/([^\/\?]+)/);
-        return matches ? matches[1] : url.split('/').pop().split('?')[0];
-    }
-
-    // Utility methods
-    async checkAvailability() {
-        try {
-            const response = await axios.get(this.baseUrl, {
-                headers: this.headers,
-                timeout: 5000
-            });
-            return response.status === 200;
-        } catch (error) {
-            return false;
-        }
-    }
-
-    getSupportedQualities() {
-        return ['1080p', '720p', '480p', '360p'];
-    }
-
-    getSupportedTypes() {
-        return ['sub']; // Anipahe primarily focuses on subbed content
-    }
-
-    // Helper method to format file sizes
-    formatFileSize(bytes) {
-        if (!bytes || bytes === 0) return 'Unknown';
-        
-        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(1024));
-        
-        return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
-    }
-
-    // Helper method to parse duration
-    parseDuration(duration) {
-        if (!duration) return 'Unknown';
-        
-        // Convert seconds to MM:SS format
-        if (typeof duration === 'number') {
-            const minutes = Math.floor(duration / 60);
-            const seconds = duration % 60;
-            return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-        }
-        
-        return duration;
-    }
-
-    // Get anime by genre
-    async getByGenre(genre, page = 1) {
-        try {
-            const genreUrl = `${this.baseUrl}/genre/${genre}?page=${page}`;
-            
-            const response = await axios.get(genreUrl, {
-                headers: this.headers,
-                timeout: 10000
-            });
-
-            return await this.parseAnimeList(response.data);
-        } catch (error) {
-            console.error(`Anipahe genre error:`, error.message);
-            throw new Error(`Failed to get anime by genre: ${error.message}`);
-        }
-    }
-
-    // Parse anime list from HTML
-    async parseAnimeList(html) {
-        const $ = cheerio.load(html);
-        const results = [];
-
-        $('.anime-item, .item').each((index, element) => {
-            const $el = $(element);
-            const titleElement = $el.find('.title a, .anime-title a');
-            const imageElement = $el.find('.poster img, .anime-poster img');
-            
-            const title = titleElement.text().trim();
-            const url = titleElement.attr('href');
-            const image = imageElement.attr('data-src') || imageElement.attr('src');
-            
-            // Extract metadata
-            const episode = $el.find('.episode, .latest-episode').text().trim();
-            const type = $el.find('.type, .anime-type').text().trim();
-            const year = $el.find('.year, .anime-year').text().trim();
-            const status = $el.find('.status, .anime-status').text().trim();
-
-            if (title && url) {
-                results.push({
-                    id: this.extractAnimeId(url),
-                    title: title,
-                    url: url.startsWith('http') ? url : this.baseUrl + url,
-                    image: image,
-                    episodes: episode ? parseInt(episode.match(/\d+/)?.[0]) : null,
-                    type: type || 'TV',
-                    year: year ? parseInt(year.match(/\d{4}/)?.[0]) : null,
-                    status: status || 'Unknown'
-                });
-            }
-        });
-
-        return results;
-    }
-
-    // Get available genres
-    async getGenres() {
-        try {
-            const response = await axios.get(this.baseUrl, {
-                headers: this.headers,
-                timeout: 10000
-            });
-
-            const $ = cheerio.load(response.data);
-            const genres = [];
-
-            $('.genre-list a, .genres a').each((i, el) => {
-                const $el = $(el);
-                const name = $el.text().trim();
-                const slug = $el.attr('href')?.split('/').pop();
-                
-                if (name && slug) {
-                    genres.push({
-                        name: name,
-                        slug: slug
-                    });
-                }
-            });
-
-            return genres;
-        } catch (error) {
-            console.error(`Anipahe genres error:`, error.message);
-            return [];
-        }
-    }
-
-    // Advanced search with filters
-    async advancedSearch(options = {}) {
-        try {
-            const {
-                query = '',
-                genre = '',
-                year = '',
-                status = '',
-                type = '',
-                page = 1
-            } = options;
-
-            let searchUrl = `${this.apiUrl}?m=search`;
-            
-            if (query) searchUrl += `&q=${encodeURIComponent(query)}`;
-            if (genre) searchUrl += `&genre=${genre}`;
-            if (year) searchUrl += `&year=${year}`;
-            if (status) searchUrl += `&status=${status}`;
-            if (type) searchUrl += `&type=${type}`;
-            if (page > 1) searchUrl += `&page=${page}`;
-
-            const response = await axios.get(searchUrl, {
-                headers: this.headers,
-                timeout: 10000
-            });
-
-            const data = response.data;
-            const results = [];
-
-            if (data && data.data && Array.isArray(data.data)) {
-                data.data.forEach(anime => {
-                    results.push({
-                        id: anime.session,
-                        title: anime.title,
-                        url: `${this.baseUrl}/anime/${anime.session}`,
-                        image: anime.poster,
-                        year: anime.year,
-                        episodes: anime.episodes,
-                        type: anime.type || 'TV',
-                        status: anime.status || 'Unknown',
-                        score: anime.score,
-                        genres: anime.genres || []
-                    });
-                });
-            }
-
-            return {
-                results: results,
-                pagination: {
-                    current_page: data.current_page || 1,
-                    last_page: data.last_page || 1,
-                    total: data.total || results.length
-                }
-            };
-        } catch (error) {
-            console.error(`Anipahe advanced search error:`, error.message);
-            throw new Error(`Advanced search failed: ${error.message}`);
-        }
-    }
-
-    // Get random anime
-    async getRandomAnime() {
-        try {
-            const randomUrl = `${this.baseUrl}/random`;
-            
-            const response = await axios.get(randomUrl, {
-                headers: this.headers,
-                timeout: 10000,
-                maxRedirects: 5
-            });
-
-            // Extract anime info from the redirected page
-            const $ = cheerio.load(response.data);
-            const animeUrl = response.request.res.responseUrl || response.config.url;
-            const animeId = this.extractAnimeId(animeUrl);
-            
-            if (animeId) {
-                return await this.getAnimeDetails(animeId);
-            }
-
-            throw new Error('Failed to get random anime');
-        } catch (error) {
-            console.error(`Anipahe random anime error:`, error.message);
-            throw new Error(`Failed to get random anime: ${error.message}`);
         }
     }
 }
