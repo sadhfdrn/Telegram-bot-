@@ -1,4 +1,4 @@
-const TikTokWatermarkPlugin = require("../plugins/wmtiktok.js");
+const TikTokWatermarkPlugin = require("../plugins/wmtiktok2.js");
 
 class TikTokCommand {
     constructor(bot, botManager) {
