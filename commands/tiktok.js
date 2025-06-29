@@ -632,44 +632,50 @@ Your downloads should work much better now!`;
     }
 
     // Handle Nrmtiktok download input (clean download)
-    async handleNrmTikTokInput(msg, userState, botManager) {
-        const chatId = msg.chat.id;
-        const userId = msg.from.id;
-        const url = msg.text.trim();
-        const fs = require('fs');
+    // Handle Nrmtiktok download input (clean download)
+async handleNrmTikTokInput(msg, userState, botManager) {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    const url = msg.text.trim();
+    const fs = require('fs');
 
-        // Validate TikTok URL
-        if (!url.includes('tiktok.com')) {
-            this.bot.sendMessage(chatId, '❌ Please provide a valid TikTok URL');
-            return;
-        }
-
-        try {
-            const processingMsg = await this.bot.sendMessage(chatId, '⏳ Downloading clean TikTok video...');
-            
-            // Download video without watermark
-            const videoPath = await this.tikTokPlugin.downloadTikTokMedia(url, Boolean(this.tikTokPlugin.tiktokCookie));
-            
-            // Send the clean video directly (no watermark processing)
-            const videoBuffer = fs.readFileSync(videoPath);
-            await this.bot.sendVideo(chatId, videoBuffer, { 
-                caption: '✅ Clean TikTok video downloaded successfully!\n📱 No watermarks added - completely clean!'
-            });
-
-            // Clean up temp file
-            fs.unlinkSync(videoPath);
-            
-            // Delete processing message
-            this.bot.deleteMessage(chatId, processingMsg.message_id);
-            
-            // Clear user state
-            botManager.clearUserState(userId);
-            
-        } catch (error) {
-            console.error('Nrmtiktok error:', error);
-            this.bot.sendMessage(chatId, `❌ Error: ${error.message}`);
-        }
+    // Validate TikTok URL
+    if (!url.includes('tiktok.com')) {
+        this.bot.sendMessage(chatId, '❌ Please provide a valid TikTok URL');
+        return;
     }
+
+    try {
+        const processingMsg = await this.bot.sendMessage(chatId, '⏳ Downloading clean TikTok video...');
+
+        // Download video without watermark
+        const mediaFiles = await this.tikTokPlugin.downloadTikTokMedia(url, Boolean(this.tikTokPlugin.tiktokCookie));
+        const videoFile = mediaFiles.find(f => f.type === 'video');
+
+        if (!videoFile) {
+            throw new Error('No video file found in media');
+        }
+
+        // Send the clean video directly (no watermark processing)
+        const videoBuffer = fs.readFileSync(videoFile.path);
+        await this.bot.sendVideo(chatId, videoBuffer, {
+            caption: '✅ Clean TikTok video downloaded successfully!\n📱 No watermarks added - completely clean!'
+        });
+
+        // Clean up temp file
+        fs.unlinkSync(videoFile.path);
+
+        // Delete processing message
+        this.bot.deleteMessage(chatId, processingMsg.message_id);
+
+        // Clear user state
+        botManager.clearUserState(userId);
+
+    } catch (error) {
+        console.error('Nrmtiktok error:', error);
+        this.bot.sendMessage(chatId, `❌ Error: ${error.message}`);
+    }
+}
 
     // Handle custom text input for watermark
     handleCustomTextInput(msg, userState, botManager) {
