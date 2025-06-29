@@ -670,19 +670,22 @@ async handleNrmTikTokInput(msg, userState, botManager) {
         if (imageFiles.length > 0) {
             const mediaGroup = imageFiles.map((img, index) => ({
                 type: 'photo',
-                media: { source: img.path },
+                media: img.path, // ✅ must be string for sendMediaGroup
                 ...(index === 0 && { caption: `🖼️ Clean TikTok images (${imageFiles.length})` })
             }));
 
             await this.bot.sendMediaGroup(chatId, mediaGroup);
 
-            // Cleanup files
+            // Clean up image files
             for (const img of imageFiles) {
                 fs.unlinkSync(img.path);
             }
         }
 
-        this.bot.deleteMessage(chatId, processingMsg.message_id);
+        // Delete processing message
+        await this.bot.deleteMessage(chatId, processingMsg.message_id);
+
+        // Clear user state
         botManager.clearUserState(userId);
 
     } catch (error) {
@@ -690,7 +693,6 @@ async handleNrmTikTokInput(msg, userState, botManager) {
         this.bot.sendMessage(chatId, `❌ Error: ${error.message}`);
     }
 }
-
     // Handle custom text input for watermark
     handleCustomTextInput(msg, userState, botManager) {
         const chatId = msg.chat.id;
