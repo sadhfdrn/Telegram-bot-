@@ -1,750 +1,496 @@
-const TikTokWatermarkPlugin = require("../plugins/wmtiktok.js");
-const fs = require("fs");
-const path = require("path");
+const TikTokWatermarkPlugin = require('../plugins/wmtiktok.js');
 
 class TikTokCommand {
     constructor(bot, botManager) {
         this.bot = bot;
         this.botManager = botManager;
         this.tikTokPlugin = new TikTokWatermarkPlugin();
-        this.tikTokPlugin.init({ command() {} });
-        this.styleModules = new Map();
-        this.loadStyleModules();
-    }
-
-    loadStyleModules() {
-        try {
-            const stylesDir = path.join(__dirname, "../plugins/styles");
-            if (!fs.existsSync(stylesDir)) {
-                console.warn("Styles directory not found:", stylesDir);
-                return;
-            }
-
-            const styleFiles = fs.readdirSync(stylesDir)
-                .filter(file => file.endsWith(".js"))
-                .map(file => file.replace(".js", ""));
-
-            console.log("Loading style modules:", styleFiles);
-
-            for (const styleName of styleFiles) {
-                try {
-                    const stylePath = path.join(stylesDir, `${styleName}.js`);
-                    const StyleClass = require(stylePath);
-                    const styleInstance = new StyleClass();
-                    this.styleModules.set(styleName, styleInstance);
-                    console.log(`✅ Loaded style module: ${styleName}`);
-                } catch (error) {
-                    console.error(`❌ Failed to load style module ${styleName}:`, error.message);
-                }
-            }
-        } catch (error) {
-            console.error("Error loading style modules:", error.message);
-        }
-    }
-
-    getAllStyles() {
-        const allStyles = new Map();
-        for (const [moduleName, moduleInstance] of this.styleModules) {
-            try {
-                if (typeof moduleInstance.getPresetStyles === 'function') {
-                    const presets = moduleInstance.getPresetStyles();
-                    for (const [presetName, presetConfig] of Object.entries(presets)) {
-                        const fullStyleName = `${moduleName}_${presetName}`;
-                        allStyles.set(fullStyleName, {
-                            ...presetConfig,
-                            module: moduleName,
-                            styleClass: moduleInstance,
-                            originalName: presetName
-                        });
-                    }
-                }
-            } catch (error) {
-                console.error(`Error getting styles from ${moduleName}:`, error.message);
-            }
-        }
-        return allStyles;
+        this.tikTokPlugin.init({ command: () => {} }); // Initialize plugin
     }
 
     init() {
-        console.log("🎬 TikTok Command initialized");
-        console.log(`📦 Loaded ${this.styleModules.size} style modules`);
-        console.log(`🎨 Available styles: ${this.getAllStyles().size}`);
+        console.log('🎬 TikTok Command initialized');
     }
 
+    // Main button for the commands menu
     getMainButton() {
         return {
-            text: "🎬 TikTok Tools",
-            callback_data: "tiktok_main"
+            text: '🎬 TikTok Tools',
+            callback_data: 'tiktok_main'
         };
     }
 
-    // NEW METHOD: Handle text messages when user is in a state
-    async handleTextInput(message, userState, botManager){
-        const userId = message.from.id;
-        const chatId = message.chat.id;
-        const text = message.text;
-        
-        const userState = this.botManager.getUserState(userId);
-        
-        if (!userState || userState.commandName !== 'tiktok') {
-            return false; // Not handling this message
-        }
-
-        try {
-            switch (userState.operation) {
-                case 'wmtiktok':
-                    if (userState.step === 'waiting_for_url') {
-                        await this.handleWmTikTokUrl(message, text);
-                        return true;
-                    }
-                    break;
-
-                case 'nrmtiktok':
-                    if (userState.step === 'waiting_for_url') {
-                        await this.handleNrmTikTokUrl(message, text);
-                        return true;
-                    }
-                    break;
-
-                case 'custom_text':
-                    if (userState.step === 'waiting_for_text') {
-                        await this.handleCustomTextInput(message, userState, this.botManager);
-                        return true;
-                    }
-                    break;
-
-                case 'set_cookie':
-                    if (userState.step === 'waiting_for_cookie') {
-                        await this.handleSetCookieInput(message, text);
-                        return true;
-                    }
-                    break;
-            }
-        } catch (error) {
-            console.error("Error handling TikTok message:", error);
-            await this.bot.sendMessage(chatId, `❌ Error: ${error.message}`);
-            this.botManager.clearUserState(userId);
-        }
-
-        return false;
-    }
-
-    // Handle wmtiktok URL input
-    async handleWmTikTokUrl(message, url) {
-        const userId = message.from.id;
-        const chatId = message.chat.id;
-
-        // Validate TikTok URL
-        if (!this.isValidTikTokUrl(url)) {
-            await this.bot.sendMessage(chatId, "❌ Please provide a valid TikTok URL.\n\nExample: https://www.tiktok.com/@username/video/1234567890");
-            return;
-        }
-
-        try {
-            // Clear user state
-            this.botManager.clearUserState(userId);
-
-            // Create mock message object for the plugin
-            const mockMessage = {
-                reply: async (content, options = {}) => {
-                    if (Buffer.isBuffer(content)) {
-                        await this.bot.sendVideo(chatId, content, options);
-                    } else {
-                        await this.bot.sendMessage(chatId, content, { parse_mode: 'Markdown' });
-                    }
-                },
-                from: message.from,
-                chat: message.chat
-            };
-
-            // Call the plugin's wmtiktok handler
-            await this.tikTokPlugin.handleWmTikTok(mockMessage, [url]);
-
-        } catch (error) {
-            console.error("Error processing wmtiktok:", error);
-            await this.bot.sendMessage(chatId, `❌ Error processing video: ${error.message}`);
-        }
-    }
-
-    // Handle nrmtiktok URL input
-    async handleNrmTikTokUrl(message, url) {
-        const userId = message.from.id;
-        const chatId = message.chat.id;
-
-        // Validate TikTok URL
-        if (!this.isValidTikTokUrl(url)) {
-            await this.bot.sendMessage(chatId, "❌ Please provide a valid TikTok URL.\n\nExample: https://www.tiktok.com/@username/video/1234567890");
-            return;
-        }
-
-        try {
-            // Clear user state
-            this.botManager.clearUserState(userId);
-
-            // Create mock message object for the plugin
-            const mockMessage = {
-                reply: async (content, options = {}) => {
-                    if (Buffer.isBuffer(content)) {
-                        await this.bot.sendVideo(chatId, content, options);
-                    } else {
-                        await this.bot.sendMessage(chatId, content, { parse_mode: 'Markdown' });
-                    }
-                },
-                from: message.from,
-                chat: message.chat
-            };
-
-            // Call the plugin's nrmtiktok handler
-            await this.tikTokPlugin.handleNrmTikTok(mockMessage, [url]);
-
-        } catch (error) {
-            console.error("Error processing nrmtiktok:", error);
-            await this.bot.sendMessage(chatId, `❌ Error processing video: ${error.message}`);
-        }
-    }
-
-    // Handle cookie input
-    async handleSetCookieInput(message, cookie) {
-        const userId = message.from.id;
-        const chatId = message.chat.id;
-
-        try {
-            // Clear user state
-            this.botManager.clearUserState(userId);
-
-            if (!cookie || cookie.trim().length < 10) {
-                await this.bot.sendMessage(chatId, "❌ Please provide a valid cookie string.");
-                return;
-            }
-
-            this.tikTokPlugin.setTikTokCookie(cookie.trim());
-            await this.bot.sendMessage(chatId, "✅ TikTok cookie set successfully!\n🔓 Enhanced download features enabled.");
-
-        } catch (error) {
-            console.error("Error setting cookie:", error);
-            await this.bot.sendMessage(chatId, `❌ Error setting cookie: ${error.message}`);
-        }
-    }
-
-    // Validate TikTok URL
-    isValidTikTokUrl(url) {
-        const tiktokPatterns = [
-            /^https?:\/\/(www\.)?(tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)/i,
-            /tiktok\.com\/@[\w.-]+\/video\/\d+/i,
-            /vm\.tiktok\.com\/[\w]+/i,
-            /vt\.tiktok\.com\/[\w]+/i
-        ];
-
-        return tiktokPatterns.some(pattern => pattern.test(url));
-    }
-
-    handleCallback(callbackQuery, data) {
+    // Handle callback queries for this command
+    handleCallback(callbackQuery, botManager) {
         const chatId = callbackQuery.message.chat.id;
         const messageId = callbackQuery.message.message_id;
-        const callbackData = callbackQuery.data;
+        const data = callbackQuery.data;
         const userId = callbackQuery.from.id;
 
-        console.log(`🔧 TikTok callback received: ${callbackData}`);
-
-        if (!callbackData.startsWith("tiktok_")) {
-            return false;
+        // Check if this callback belongs to our command
+        if (!data.startsWith('tiktok_')) {
+            return false; // Not our callback
         }
 
-        try {
-            switch (callbackData) {
-                case "tiktok_main":
-                case "tiktok_back_to_main":
-                    this.showCommandMenu(chatId, messageId);
-                    break;
-
-                case "tiktok_styles":
-                case "tiktok_back_to_styles":
-                    this.showStylesMenu(chatId, messageId);
-                    break;
-
-                case "tiktok_setwatermark":
-                case "tiktok_back_to_setwatermark":
-                    this.showSetWatermarkMenu(chatId, messageId);
-                    break;
-
-                case "tiktok_wmtiktok":
-                    this.startWmTikTok(chatId, messageId, userId);
-                    break;
-
-                case "tiktok_nrmtiktok":
-                    this.startNrmTikTok(chatId, messageId, userId);
-                    break;
-
-                case "tiktok_setcookie":
-                    this.showSetCookieMenu(chatId, messageId, userId);
-                    break;
-
-                case "tiktok_cookiestatus":
-                    this.showCookieStatus(chatId, messageId);
-                    break;
-
-                case "tiktok_set_new_cookie":
-                    this.startSetCookie(chatId, messageId, userId);
-                    break;
-
-                default:
-                    if (callbackData.startsWith("tiktok_module_")) {
-                        const moduleName = callbackData.replace("tiktok_module_", "");
-                        this.showModuleStyles(chatId, messageId, moduleName);
-                    } else if (callbackData.startsWith("tiktok_setmodule_")) {
-                        const moduleName = callbackData.replace("tiktok_setmodule_", "");
-                        this.handleSetModuleCallback(callbackQuery, moduleName);
-                    } else if (callbackData.startsWith("tiktok_style_")) {
-                        const styleName = callbackData.replace("tiktok_style_", "");
-                        this.selectStyle(chatId, messageId, userId, styleName);
-                    } else if (callbackData.startsWith("tiktok_set_style_")) {
-                        const styleName = callbackData.replace("tiktok_set_style_", "");
-                        this.startSetCustomText(chatId, messageId, userId, styleName);
-                    } else if (callbackData.startsWith("tiktok_confirm_style_")) {
-                        const styleName = callbackData.replace("tiktok_confirm_style_", "");
-                        this.confirmStyle(chatId, messageId, userId, styleName);
-                    } else if (callbackData.startsWith("tiktok_custom_text_")) {
-                        const styleName = callbackData.replace("tiktok_custom_text_", "");
-                        this.startCustomTextInput(chatId, messageId, userId, styleName);
-                    }
-                    break;
-            }
-
-            this.bot.answerCallbackQuery(callbackQuery.id);
-            return true;
-
-        } catch (error) {
-            console.error("Error handling TikTok callback:", error);
-            this.bot.answerCallbackQuery(callbackQuery.id, {
-                text: "❌ Error occurred. Please try again.",
-                show_alert: false
-            });
-            return true;
+        switch (data) {
+            case 'tiktok_main':
+                this.showCommandMenu(chatId, messageId);
+                break;
+            case 'tiktok_styles':
+                this.showStylesMenu(chatId, messageId);
+                break;
+            case 'tiktok_setwatermark':
+                this.showSetWatermarkMenu(chatId, messageId);
+                break;
+            case 'tiktok_wmtiktok':
+                this.startWmTikTok(chatId, messageId, userId);
+                break;
+            case 'tiktok_nrmtiktok':
+                this.startNrmTikTok(chatId, messageId, userId);
+                break;
+            case 'tiktok_setcookie':
+                this.showSetCookieMenu(chatId, messageId, userId);
+                break;
+            case 'tiktok_cookiestatus':
+                this.showCookieStatus(chatId, messageId);
+                break;
+            case 'tiktok_set_new_cookie':
+                this.startSetCookie(chatId, messageId, userId);
+                break;
+            case 'tiktok_back_to_main':
+                this.showCommandMenu(chatId, messageId);
+                break;
+            default:
+                // Handle style selection
+                if (data.startsWith('tiktok_style_')) {
+                    const styleName = data.replace('tiktok_style_', '');
+                    this.selectStyle(chatId, messageId, userId, styleName);
+                }
+                // Handle watermark text setting
+                else if (data.startsWith('tiktok_set_style_')) {
+                    const styleName = data.replace('tiktok_set_style_', '');
+                    this.startSetCustomText(chatId, messageId, userId, styleName);
+                }
+                // Handle confirm style
+                else if (data.startsWith('tiktok_confirm_style_')) {
+                    const styleName = data.replace('tiktok_confirm_style_', '');
+                    this.confirmStyle(chatId, messageId, userId, styleName);
+                }
+                // Handle custom text for styles
+                else if (data.startsWith('tiktok_custom_text_')) {
+                    const styleName = data.replace('tiktok_custom_text_', '');
+                    this.startCustomTextInput(chatId, messageId, userId, styleName);
+                }
+                break;
         }
+
+        return true; // We handled this callback
     }
 
+    // Show main TikTok command menu with Set Cookie button
     showCommandMenu(chatId, messageId) {
-        const cookieStatus = this.tikTokPlugin.tiktokCookie ? "✅" : "❌";
-        const totalStyles = this.getAllStyles().size;
+        const cookieStatus = this.tikTokPlugin.tiktokCookie ? '✅' : '❌';
         
-        const menuText = `🎬 *TikTok Tools*
+        const menuMessage = `🎬 *TikTok Tools*
 
 Choose what you'd like to do:
 
-🎨 *Styles* - Browse ${totalStyles} watermark styles from ${this.styleModules.size} modules
+🎨 *Styles* - Browse and preview watermark styles
 ⚙️ *Set Watermark* - Set custom watermark style and text
 🎥 *Wmtiktok* - Download with custom watermark
 📱 *Nrmtiktok* - Download without any watermark (clean video)
 ${cookieStatus} *Set Cookie* - Set TikTok cookie for better downloads
-📊 *Cookie Status* - Check current cookie status
-
-📦 **Loaded Modules:** ${Array.from(this.styleModules.keys()).join(", ")}`;
+📊 *Cookie Status* - Check current cookie status`;
 
         const keyboard = {
             inline_keyboard: [
-                [{ text: "🎨 Styles", callback_data: "tiktok_styles" }],
-                [{ text: "⚙️ Set Watermark", callback_data: "tiktok_setwatermark" }],
+                [{ text: '🎨 Styles', callback_data: 'tiktok_styles' }],
+                [{ text: '⚙️ Set Watermark', callback_data: 'tiktok_setwatermark' }],
                 [
-                    { text: "🎥 Wmtiktok", callback_data: "tiktok_wmtiktok" },
-                    { text: "📱 Nrmtiktok", callback_data: "tiktok_nrmtiktok" }
+                    { text: '🎥 Wmtiktok', callback_data: 'tiktok_wmtiktok' },
+                    { text: '📱 Nrmtiktok', callback_data: 'tiktok_nrmtiktok' }
                 ],
                 [
-                    { text: `${cookieStatus} Set Cookie`, callback_data: "tiktok_setcookie" },
-                    { text: "📊 Cookie Status", callback_data: "tiktok_cookiestatus" }
+                    { text: `${cookieStatus} Set Cookie`, callback_data: 'tiktok_setcookie' },
+                    { text: '📊 Cookie Status', callback_data: 'tiktok_cookiestatus' }
                 ],
-                [{ text: "🔙 Back to Main", callback_data: "back_to_main" }]
+                [{ text: '🔙 Back to Main', callback_data: 'back_to_main' }]
             ]
         };
 
-        this.bot.editMessageText(menuText, {
+        this.bot.editMessageText(menuMessage, {
             chat_id: chatId,
             message_id: messageId,
-            parse_mode: "Markdown",
+            parse_mode: 'Markdown',
             reply_markup: keyboard
-        }).catch(error => {
-            console.error("Error editing message:", error);
         });
     }
 
+    // Show Set Cookie menu
+    showSetCookieMenu(chatId, messageId, userId) {
+        const currentStatus = this.tikTokPlugin.tiktokCookie ? 'Cookie is currently set ✅' : 'No cookie set ❌';
+        
+        const setCookieMessage = `🍪 *Set TikTok Cookie*
+
+${currentStatus}
+
+**Why set a cookie?**
+• Bypasses 403 access errors
+• Higher download success rate
+• Access to better quality videos
+• Reduces failed downloads
+
+**How to get your TikTok cookie:**
+1. Install Cookie-Editor browser extension
+2. Login to TikTok.com in your browser
+3. Open Cookie-Editor on TikTok page
+4. Copy all cookies (or sessionid cookie)
+5. Click "Set New Cookie" below
+
+**Benefits:**
+✅ Enhanced download features
+✅ Better error handling
+✅ Higher success rate`;
+
+        const keyboard = {
+            inline_keyboard: [
+                [{ text: '🆕 Set New Cookie', callback_data: 'tiktok_set_new_cookie' }],
+                [{ text: '📊 Check Status', callback_data: 'tiktok_cookiestatus' }],
+                [{ text: '🔙 Back to Menu', callback_data: 'tiktok_back_to_main' }]
+            ]
+        };
+
+        this.bot.editMessageText(setCookieMessage, {
+            chat_id: chatId,
+            message_id: messageId,
+            parse_mode: 'Markdown',
+            reply_markup: keyboard
+        });
+    }
+
+    // Show Cookie Status
+    showCookieStatus(chatId, messageId) {
+        const status = this.tikTokPlugin.getCookieStatus();
+        const isSet = this.tikTokPlugin.tiktokCookie ? true : false;
+        
+        const features = isSet ? 
+            '✅ Enhanced downloads enabled\n✅ Better 403 error bypass\n✅ Higher success rate\n✅ Access to HD videos' : 
+            '❌ Basic downloads only\n❌ May encounter 403 errors\n❌ Limited success rate\n❌ Lower quality videos';
+        
+        const statusMessage = `📊 *Cookie Status*
+
+🍪 **Status:** ${status}
+
+**Features:**
+${features}
+
+${!isSet ? '\n💡 **Tip:** Set a cookie to improve download reliability!' : '\n🎉 **Great!** Your downloads should work better now!'}`;
+
+        const keyboard = {
+            inline_keyboard: [
+                ...(isSet ? [] : [[{ text: '🆕 Set Cookie', callback_data: 'tiktok_setcookie' }]]),
+                [{ text: '🔙 Back to Menu', callback_data: 'tiktok_back_to_main' }]
+            ]
+        };
+
+        this.bot.editMessageText(statusMessage, {
+            chat_id: chatId,
+            message_id: messageId,
+            parse_mode: 'Markdown',
+            reply_markup: keyboard
+        });
+    }
+
+    // Start cookie setting process
+    startSetCookie(chatId, messageId, userId) {
+        const setCookieMessage = `🍪 *Enter TikTok Cookie*
+
+Please paste your TikTok cookie string here.
+
+**Cookie Examples:**
+• Full cookie string from Cookie-Editor
+• Just the sessionid: \`sessionid=abc123...\`
+• Multiple cookies separated by semicolons
+
+**Getting your cookie:**
+1. Go to TikTok.com and login
+2. Press F12 (Developer Tools)
+3. Go to Application/Storage tab
+4. Find Cookies > tiktok.com
+5. Copy the sessionid value
+6. Send it here
+
+**Security Note:** Only use your own cookie, never share it with others.`;
+
+        const keyboard = {
+            inline_keyboard: [
+                [{ text: '❌ Cancel', callback_data: 'tiktok_setcookie' }]
+            ]
+        };
+
+        this.bot.editMessageText(setCookieMessage, {
+            chat_id: chatId,
+            message_id: messageId,
+            parse_mode: 'Markdown',
+            reply_markup: keyboard
+        });
+
+        // Set user state to expect cookie input
+        this.botManager.setUserState(userId, {
+            commandName: 'tiktok',
+            operation: 'set_cookie',
+            step: 'waiting_for_cookie'
+        });
+    }
+
+    // Show styles selection menu
     showStylesMenu(chatId, messageId) {
-        const menuText = "🎨 *Watermark Style Modules*\n\nChoose a style module to explore:";
-        const keyboard = { inline_keyboard: [] };
-        
-        const moduleNames = Array.from(this.styleModules.keys());
-        
-        for (let i = 0; i < moduleNames.length; i += 2) {
-            const row = [];
-            const moduleName = moduleNames[i];
-            const moduleInstance = this.styleModules.get(moduleName);
-            
-            let styleCount = 0;
-            try {
-                if (typeof moduleInstance.getPresetStyles === 'function') {
-                    styleCount = Object.keys(moduleInstance.getPresetStyles()).length;
-                }
-            } catch (error) {
-                styleCount = "?";
-            }
-            
-            row.push({
-                text: `📦 ${moduleName.toUpperCase()} (${styleCount})`,
-                callback_data: `tiktok_module_${moduleName}`
-            });
-            
-            if (moduleNames[i + 1]) {
-                const nextModuleName = moduleNames[i + 1];
-                const nextModuleInstance = this.styleModules.get(nextModuleName);
-                
-                let nextStyleCount = 0;
-                try {
-                    if (typeof nextModuleInstance.getPresetStyles === 'function') {
-                        nextStyleCount = Object.keys(nextModuleInstance.getPresetStyles()).length;
-                    }
-                } catch (error) {
-                    nextStyleCount = "?";
-                }
-                
-                row.push({
-                    text: `📦 ${nextModuleName.toUpperCase()} (${nextStyleCount})`,
-                    callback_data: `tiktok_module_${nextModuleName}`
-                });
-            }
-            
-            keyboard.inline_keyboard.push(row);
-        }
-        
-        keyboard.inline_keyboard.push([{ text: "🔙 Back", callback_data: "tiktok_back_to_main" }]);
+        const stylesMessage = `🎨 *Watermark Styles*
 
-        this.bot.editMessageText(menuText, {
-            chat_id: chatId,
-            message_id: messageId,
-            parse_mode: "Markdown",
-            reply_markup: keyboard
-        }).catch(error => {
-            console.error("Error editing message:", error);
-        });
-    }
+Choose a style to preview and set:`;
 
-    showModuleStyles(chatId, messageId, moduleName) {
-        const moduleInstance = this.styleModules.get(moduleName);
-        if (!moduleInstance) {
-            return this.bot.answerCallbackQuery(callbackQuery.id, { text: "Module not found!" });
-        }
+        const keyboard = {
+            inline_keyboard: []
+        };
 
-        let styles = {};
-        try {
-            if (typeof moduleInstance.getPresetStyles === 'function') {
-                styles = moduleInstance.getPresetStyles();
-            }
-        } catch (error) {
-            console.error(`Error getting styles from ${moduleName}:`, error.message);
-        }
-
-        const menuText = `✨ *${moduleName.toUpperCase()} Styles*\n\nChoose a style to preview:`;
-        const keyboard = { inline_keyboard: [] };
-        
+        // Add style buttons
+        const styles = this.tikTokPlugin.styles;
         const styleNames = Object.keys(styles);
         
+        // Create rows of 2 buttons each
         for (let i = 0; i < styleNames.length; i += 2) {
             const row = [];
-            const styleName = styleNames[i];
-            const fullStyleName = `${moduleName}_${styleName}`;
-            
-            row.push({
-                text: `✨ ${styleName.toUpperCase()}`,
-                callback_data: `tiktok_style_${fullStyleName}`
-            });
-            
+            row.push({ text: `✨ ${styleNames[i].toUpperCase()}`, callback_data: `tiktok_style_${styleNames[i]}` });
             if (styleNames[i + 1]) {
-                const nextStyleName = styleNames[i + 1];
-                const nextFullStyleName = `${moduleName}_${nextStyleName}`;
-                
-                row.push({
-                    text: `✨ ${nextStyleName.toUpperCase()}`,
-                    callback_data: `tiktok_style_${nextFullStyleName}`
-                });
+                row.push({ text: `✨ ${styleNames[i + 1].toUpperCase()}`, callback_data: `tiktok_style_${styleNames[i + 1]}` });
             }
-            
             keyboard.inline_keyboard.push(row);
         }
-        
-        keyboard.inline_keyboard.push([{ text: "🔙 Back to Modules", callback_data: "tiktok_back_to_styles" }]);
 
-        this.bot.editMessageText(menuText, {
+        keyboard.inline_keyboard.push([{ text: '🔙 Back', callback_data: 'tiktok_back_to_main' }]);
+
+        this.bot.editMessageText(stylesMessage, {
             chat_id: chatId,
             message_id: messageId,
-            parse_mode: "Markdown",
+            parse_mode: 'Markdown',
             reply_markup: keyboard
-        }).catch(error => {
-            console.error("Error editing message:", error);
         });
     }
 
+    // Show set watermark menu (simplified)
     showSetWatermarkMenu(chatId, messageId) {
-        const menuText = "⚙️ *Set Watermark*\n\nChoose a module to customize styles:";
-        const keyboard = { inline_keyboard: [] };
+        const setWatermarkMessage = `⚙️ *Set Watermark*
+
+Choose a style to customize with your own text:`;
+
+        const keyboard = {
+            inline_keyboard: []
+        };
+
+        // Add style buttons for setting
+        const styles = this.tikTokPlugin.styles;
+        const styleNames = Object.keys(styles);
         
-        const moduleNames = Array.from(this.styleModules.keys());
-        
-        for (let i = 0; i < moduleNames.length; i += 2) {
+        // Create rows of 2 buttons each
+        for (let i = 0; i < styleNames.length; i += 2) {
             const row = [];
-            const moduleName = moduleNames[i];
-            
-            row.push({
-                text: `⚙️ ${moduleName.toUpperCase()}`,
-                callback_data: `tiktok_setmodule_${moduleName}`
-            });
-            
-            if (moduleNames[i + 1]) {
-                const nextModuleName = moduleNames[i + 1];
-                row.push({
-                    text: `⚙️ ${nextModuleName.toUpperCase()}`,
-                    callback_data: `tiktok_setmodule_${nextModuleName}`
-                });
+            row.push({ text: `⚙️ ${styleNames[i].toUpperCase()}`, callback_data: `tiktok_set_style_${styleNames[i]}` });
+            if (styleNames[i + 1]) {
+                row.push({ text: `⚙️ ${styleNames[i + 1].toUpperCase()}`, callback_data: `tiktok_set_style_${styleNames[i + 1]}` });
             }
-            
             keyboard.inline_keyboard.push(row);
         }
-        
-        keyboard.inline_keyboard.push([{ text: "🔙 Back", callback_data: "tiktok_back_to_main" }]);
 
-        this.bot.editMessageText(menuText, {
+        keyboard.inline_keyboard.push([{ text: '🔙 Back', callback_data: 'tiktok_back_to_main' }]);
+
+        this.bot.editMessageText(setWatermarkMessage, {
             chat_id: chatId,
             message_id: messageId,
-            parse_mode: "Markdown",
+            parse_mode: 'Markdown',
             reply_markup: keyboard
-        }).catch(error => {
-            console.error("Error editing message:", error);
         });
     }
 
+    // Preview and select a style
     selectStyle(chatId, messageId, userId, styleName) {
-        const allStyles = this.getAllStyles();
-        const style = allStyles.get(styleName);
-        
+        const style = this.tikTokPlugin.styles[styleName];
         if (!style) {
-            return this.bot.answerCallbackQuery(callbackQuery.id, { text: "Style not found!" });
+            this.bot.answerCallbackQuery(callbackQuery.id, { text: 'Style not found!' });
+            return;
         }
 
-        const previewText = `✨ *${style.originalName.toUpperCase()} Style Preview*
-📦 **Module:** ${style.module}
+        const styleMessage = `✨ *${styleName.toUpperCase()} Style Preview*
 
-🏷️ **Text:** ${style.text || "N/A"}
-🔤 **Font:** ${style.font || style.fontFamily || "Default"}
-📏 **Size:** ${style.fontSize || style.size || "Default"}px
-🎨 **Color:** ${style.color || style.textColor || "Default"}
-👻 **Opacity:** ${Math.round(100 * (style.opacity || 1))}%
-📍 **Position:** ${style.position || "Default"}
-🔄 **Rotation:** ${style.rotation || 0}°
-✨ **Effect:** ${style.effect || style.glassColor || "Custom"}
+🏷️ **Text:** ${style.text}
+🔤 **Font:** ${style.font}
+📏 **Size:** ${style.fontSize}px
+🎨 **Color:** ${style.color}
+👻 **Opacity:** ${Math.round(style.opacity * 100)}%
+📍 **Position:** ${style.position}
+🔄 **Rotation:** ${style.rotation}°
+✨ **Effect:** ${style.effect}
+📐 **Tilt:** ${style.tilt}
 
 This is just a preview. To use this style, go back and use "Set Watermark".`;
 
         const keyboard = {
             inline_keyboard: [
-                [{ text: "🔙 Back to Module", callback_data: `tiktok_module_${style.module}` }],
-                [{ text: "🏠 Back to Menu", callback_data: "tiktok_back_to_main" }]
+                [{ text: '🔙 Back to Styles', callback_data: 'tiktok_styles' }],
+                [{ text: '🏠 Back to Menu', callback_data: 'tiktok_back_to_main' }]
             ]
         };
 
-        this.bot.editMessageText(previewText, {
+        this.bot.editMessageText(styleMessage, {
             chat_id: chatId,
             message_id: messageId,
-            parse_mode: "Markdown",
+            parse_mode: 'Markdown',
             reply_markup: keyboard
-        }).catch(error => {
-            console.error("Error editing message:", error);
         });
     }
 
+    // Start custom text setting for a style
     startSetCustomText(chatId, messageId, userId, styleName) {
-        const allStyles = this.getAllStyles();
-        const style = allStyles.get(styleName);
-        
+        const style = this.tikTokPlugin.styles[styleName];
         if (!style) {
-            return this.bot.answerCallbackQuery(callbackQuery.id, { text: "Style not found!" });
+            this.bot.answerCallbackQuery(callbackQuery.id, { text: 'Style not found!' });
+            return;
         }
 
-        const menuText = `⚙️ *Set ${style.originalName.toUpperCase()} Style*
-📦 **Module:** ${style.module}
+        const setTextMessage = `⚙️ *Set ${styleName.toUpperCase()} Style*
 
 **Current settings:**
-🏷️ Text: ${style.text || "Default"}
-🔤 Font: ${style.font || style.fontFamily || "Default"}
-📏 Size: ${style.fontSize || style.size || "Default"}px
-🎨 Color: ${style.color || style.textColor || "Default"}
-✨ Effect: ${style.effect || style.glassColor || "Custom"}
+🏷️ Text: ${style.text}
+🔤 Font: ${style.font}
+📏 Size: ${style.fontSize}px
+🎨 Color: ${style.color}
+✨ Effect: ${style.effect}
 
 Do you want to use the default text or enter custom text?`;
 
         const keyboard = {
             inline_keyboard: [
-                [{ text: "✅ Use Default Text", callback_data: `tiktok_confirm_style_${styleName}` }],
-                [{ text: "✏️ Enter Custom Text", callback_data: `tiktok_custom_text_${styleName}` }],
-                [{ text: "🔙 Back", callback_data: "tiktok_back_to_setwatermark" }]
+                [{ text: '✅ Use Default Text', callback_data: `tiktok_confirm_style_${styleName}` }],
+                [{ text: '✏️ Enter Custom Text', callback_data: `tiktok_custom_text_${styleName}` }],
+                [{ text: '🔙 Back', callback_data: 'tiktok_setwatermark' }]
             ]
         };
 
-        this.bot.editMessageText(menuText, {
+        this.bot.editMessageText(setTextMessage, {
             chat_id: chatId,
             message_id: messageId,
-            parse_mode: "Markdown",
+            parse_mode: 'Markdown',
             reply_markup: keyboard
-        }).catch(error => {
-            console.error("Error editing message:", error);
         });
     }
 
+    // Start custom text input
     startCustomTextInput(chatId, messageId, userId, styleName) {
-        const allStyles = this.getAllStyles();
-        const style = allStyles.get(styleName);
-        
-        if (!style) {
-            return this.bot.answerCallbackQuery(callbackQuery.id, { text: "Style not found!" });
-        }
+        const customTextMessage = `✏️ *Enter Custom Text*
 
-        const menuText = `✏️ *Enter Custom Text*
-
-Please type the text you want to use for your **${style.originalName.toUpperCase()}** watermark from the **${style.module}** module.
+Please type the text you want to use for your **${styleName.toUpperCase()}** watermark.
 
 **Examples:**
 • Your name: "John Doe"
-• Your brand: "@MyBrand"  
+• Your brand: "@MyBrand"
 • Any text: "My Video"
 
 Send your custom text now:`;
 
         const keyboard = {
             inline_keyboard: [
-                [{ text: "❌ Cancel", callback_data: "tiktok_back_to_setwatermark" }]
+                [{ text: '❌ Cancel', callback_data: 'tiktok_setwatermark' }]
             ]
         };
 
-        this.bot.editMessageText(menuText, {
+        this.bot.editMessageText(customTextMessage, {
             chat_id: chatId,
             message_id: messageId,
-            parse_mode: "Markdown",
+            parse_mode: 'Markdown',
             reply_markup: keyboard
-        }).catch(error => {
-            console.error("Error editing message:", error);
         });
 
+        // Set user state to expect custom text
         this.botManager.setUserState(userId, {
-            commandName: "tiktok",
-            operation: "custom_text",
-            step: "waiting_for_text",
+            commandName: 'tiktok',
+            operation: 'custom_text',
+            step: 'waiting_for_text',
             styleName: styleName
         });
     }
 
+    // Confirm and set style with default text
     confirmStyle(chatId, messageId, userId, styleName) {
-        const allStyles = this.getAllStyles();
-        const style = allStyles.get(styleName);
-        
+        const style = this.tikTokPlugin.styles[styleName];
         if (!style) {
-            return this.bot.answerCallbackQuery(callbackQuery.id, { text: "Style not found!" });
+            this.bot.answerCallbackQuery(callbackQuery.id, { text: 'Style not found!' });
+            return;
         }
 
-        this.tikTokPlugin.watermarkSettings.set(userId, {
-            ...style,
-            fullStyleName: styleName
-        });
+        // Set the style for the user
+        this.tikTokPlugin.watermarkSettings.set(userId, { ...style });
 
-        const confirmText = `✅ *Watermark Set Successfully!*
+        const confirmMessage = `✅ *Watermark Set Successfully!*
 
-**Module:** ${style.module}
-**Style:** ${style.originalName.toUpperCase()}
-**Text:** ${style.text || "Default"}
-**Effect:** ${style.effect || style.glassColor || "Custom"}
+**Style:** ${styleName.toUpperCase()}
+**Text:** ${style.text}
+**Effect:** ${style.effect}
 
 Your watermark is now ready to use with Wmtiktok!`;
 
         const keyboard = {
             inline_keyboard: [
-                [{ text: "🎥 Use Wmtiktok Now", callback_data: "tiktok_wmtiktok" }],
-                [{ text: "🏠 Back to Menu", callback_data: "tiktok_back_to_main" }]
+                [{ text: '🎥 Use Wmtiktok Now', callback_data: 'tiktok_wmtiktok' }],
+                [{ text: '🏠 Back to Menu', callback_data: 'tiktok_back_to_main' }]
             ]
         };
 
-        this.bot.editMessageText(confirmText, {
+        this.bot.editMessageText(confirmMessage, {
             chat_id: chatId,
             message_id: messageId,
-            parse_mode: "Markdown",
+            parse_mode: 'Markdown',
             reply_markup: keyboard
-        }).catch(error => {
-            console.error("Error editing message:", error);
         });
     }
 
-    handleSetModuleCallback(callbackQuery, moduleName) {
-        const chatId = callbackQuery.message.chat.id;
-        const messageId = callbackQuery.message.message_id;
+    // Start Wmtiktok (with watermark)
+    startWmTikTok(chatId, messageId, userId) {
+        const userSettings = this.tikTokPlugin.watermarkSettings.get(userId) || this.tikTokPlugin.defaultWatermark;
         
-        const moduleInstance = this.styleModules.get(moduleName);
-        if (!moduleInstance) {
-            return this.bot.answerCallbackQuery(callbackQuery.id, { text: "Module not found!" });
-        }
+        const wmMessage = `🎥 *Wmtiktok - Download with Watermark*
 
-        let styles = {};
-        try {
-            if (typeof moduleInstance.getPresetStyles === 'function') {
-                styles = moduleInstance.getPresetStyles();
-            }
-        } catch (error) {
-            console.error(`Error getting styles from ${moduleName}:`, error.message);
-        }
+**Current watermark:** ${userSettings.text} (${userSettings.effect || 'default'} style)
 
-        const menuText = `⚙️ *Set ${moduleName.toUpperCase()} Watermark*\n\nChoose a style to customize:`;
-        const keyboard = { inline_keyboard: [] };
-        
-        const styleNames = Object.keys(styles);
-        
-        for (let i = 0; i < styleNames.length; i += 2) {
-            const row = [];
-            const styleName = styleNames[i];
-            const fullStyleName = `${moduleName}_${styleName}`;
-            
-            row.push({
-                text: `⚙️ ${styleName.toUpperCase()}`,
-                callback_data: `tiktok_set_style_${fullStyleName}`
-            });
-            
-            if (styleNames[i + 1]) {
-                const nextStyleName = styleNames[i + 1];
-                const nextFullStyleName = `${moduleName}_${nextStyleName}`;
-                
-                row.push({
-                    text: `⚙️ ${nextStyleName.toUpperCase()}`,
-                    callback_data: `tiktok_set_style_${nextFullStyleName}`
-                });
-            }
-            
-            keyboard.inline_keyboard.push(row);
-        }
-        
-        keyboard.inline_keyboard.push([{ text: "🔙 Back", callback_data: "tiktok_back_to_setwatermark" }]);
+Please send me the TikTok URL you want to download with watermark.
 
-        this.bot.editMessageText(menuText, {
+**Example:** https://www.tiktok.com/@username/video/1234567890`;
+
+        const keyboard = {
+            inline_keyboard: [
+                [{ text: '⚙️ Change Watermark', callback_data: 'tiktok_setwatermark' }],
+                [{ text: '❌ Cancel', callback_data: 'tiktok_back_to_main' }]
+            ]
+        };
+
+        this.bot.editMessageText(wmMessage, {
             chat_id: chatId,
             message_id: messageId,
-            parse_mode: "Markdown",
+            parse_mode: 'Markdown',
             reply_markup: keyboard
-        }).catch(error => {
-            console.error("Error editing message:", error);
         });
 
-        // Set user state to wait for URL input
+        // Set user state to expect TikTok URL for watermarked download
         this.botManager.setUserState(userId, {
-            commandName: "tiktok",
-            operation: "wmtiktok",
-            step: "waiting_for_url"
+            commandName: 'tiktok',
+            operation: 'wmtiktok',
+            step: 'waiting_for_url'
         });
     }
 
+    // Start Nrmtiktok (without watermark)
     startNrmTikTok(chatId, messageId, userId) {
-        const menuText = `📱 *Nrmtiktok - Download Clean Video*
+        const nrmMessage = `📱 *Nrmtiktok - Clean Download*
 
-Download TikTok videos without any watermarks or effects.
+Download TikTok videos without any watermark - completely clean!
 
 Please send me the TikTok URL you want to download.
 
@@ -752,181 +498,223 @@ Please send me the TikTok URL you want to download.
 
         const keyboard = {
             inline_keyboard: [
-                [{ text: "❌ Cancel", callback_data: "tiktok_back_to_main" }]
+                [{ text: '❌ Cancel', callback_data: 'tiktok_back_to_main' }]
             ]
         };
 
-        this.bot.editMessageText(menuText, {
+        this.bot.editMessageText(nrmMessage, {
             chat_id: chatId,
             message_id: messageId,
-            parse_mode: "Markdown",
+            parse_mode: 'Markdown',
             reply_markup: keyboard
-        }).catch(error => {
-            console.error("Error editing message:", error);
         });
 
-        // Set user state to wait for URL input
+        // Set user state to expect TikTok URL for clean download
         this.botManager.setUserState(userId, {
-            commandName: "tiktok",
-            operation: "nrmtiktok",
-            step: "waiting_for_url"
+            commandName: 'tiktok',
+            operation: 'nrmtiktok',
+            step: 'waiting_for_url'
         });
     }
 
-    showSetCookieMenu(chatId, messageId, userId) {
-        const cookieStatus = this.tikTokPlugin.tiktokCookie ? "✅ Set" : "❌ Not Set";
-        
-        const menuText = `🍪 *TikTok Cookie Management*
+    // Handle text input from users
+    handleTextInput(msg, userState, botManager) {
+        const chatId = msg.chat.id;
+        const userId = msg.from.id;
+        const text = msg.text;
 
-**Current Status:** ${cookieStatus}
-
-Setting a TikTok cookie enables:
-• Better download quality
-• Access to some restricted content
-• Reduced rate limiting
-
-**Warning:** Only use your own TikTok cookie. Never share cookies with others.`;
-
-        const keyboard = {
-            inline_keyboard: [
-                [{ text: "🔧 Set New Cookie", callback_data: "tiktok_set_new_cookie" }],
-                [{ text: "🔙 Back", callback_data: "tiktok_back_to_main" }]
-            ]
-        };
-
-        this.bot.editMessageText(menuText, {
-            chat_id: chatId,
-            message_id: messageId,
-            parse_mode: "Markdown",
-            reply_markup: keyboard
-        }).catch(error => {
-            console.error("Error editing message:", error);
-        });
+        switch (userState.operation) {
+            case 'wmtiktok':
+                this.handleWmTikTokInput(msg, userState, botManager);
+                break;
+            case 'nrmtiktok':
+                this.handleNrmTikTokInput(msg, userState, botManager);
+                break;
+            case 'custom_text':
+                this.handleCustomTextInput(msg, userState, botManager);
+                break;
+            case 'set_cookie':
+                this.handleSetCookieInput(msg, userState, botManager);
+                break;
+        }
     }
 
-    showCookieStatus(chatId, messageId) {
-        const hasCookie = this.tikTokPlugin.tiktokCookie;
-        const status = hasCookie ? "✅ Active" : "❌ Not Set";
-        const cookieLength = hasCookie ? this.tikTokPlugin.tiktokCookie.length : 0;
-        
-        const menuText = `📊 *Cookie Status*
+    // Handle cookie setting input
+    async handleSetCookieInput(msg, userState, botManager) {
+        const chatId = msg.chat.id;
+        const userId = msg.from.id;
+        const cookieString = msg.text.trim();
 
-**Status:** ${status}
-**Length:** ${cookieLength} characters
-**Features:** ${hasCookie ? "Enhanced downloads enabled" : "Basic downloads only"}
-
-${hasCookie ? "🔒 Your cookie is securely stored for this session." : "💡 Set a cookie to unlock enhanced features."}`;
-
-        const keyboard = {
-            inline_keyboard: [
-                [{ text: "🔧 Set Cookie", callback_data: "tiktok_setcookie" }],
-                [{ text: "🔙 Back", callback_data: "tiktok_back_to_main" }]
-            ]
-        };
-
-        this.bot.editMessageText(menuText, {
-            chat_id: chatId,
-            message_id: messageId,
-            parse_mode: "Markdown",
-            reply_markup: keyboard
-        }).catch(error => {
-            console.error("Error editing message:", error);
-        });
-    }
-
-    startSetCookie(chatId, messageId, userId) {
-        const menuText = `🔧 *Set TikTok Cookie*
-
-Please send your TikTok cookie string.
-
-**How to get your cookie:**
-1. Open TikTok in your browser
-2. Open Developer Tools (F12)
-3. Go to Application/Storage → Cookies
-4. Copy the entire cookie string
-
-**Security Note:** Only use your own cookie. Never share it with others.
-
-Send your cookie now:`;
-
-        const keyboard = {
-            inline_keyboard: [
-                [{ text: "❌ Cancel", callback_data: "tiktok_setcookie" }]
-            ]
-        };
-
-        this.bot.editMessageText(menuText, {
-            chat_id: chatId,
-            message_id: messageId,
-            parse_mode: "Markdown",
-            reply_markup: keyboard
-        }).catch(error => {
-            console.error("Error editing message:", error);
-        });
-
-        this.botManager.setUserState(userId, {
-            commandName: "tiktok",
-            operation: "set_cookie",
-            step: "waiting_for_cookie"
-        });
-    }
-
-    // Handle custom text input for watermark styles
-    async handleCustomTextInput(message, userState, botManager) {
-        const userId = message.from.id;
-        const chatId = message.chat.id;
-        const customText = message.text;
-        const styleName = userState.styleName;
+        if (!cookieString) {
+            this.bot.sendMessage(chatId, '❌ Please provide a valid cookie string');
+            return;
+        }
 
         try {
-            const allStyles = this.getAllStyles();
-            const style = allStyles.get(styleName);
+            // Set the cookie using the plugin method
+            this.tikTokPlugin.setTikTokCookie(cookieString);
             
-            if (!style) {
-                await this.bot.sendMessage(chatId, "❌ Style not found. Please try again.");
-                botManager.clearUserState(userId);
-                return;
-            }
+            const successMessage = `✅ *Cookie Set Successfully!*
 
-            // Create updated style with custom text
-            const updatedStyle = {
-                ...style,
-                text: customText,
-                fullStyleName: styleName
-            };
+🍪 **TikTok cookie has been set**
+🔓 **Enhanced download features enabled**
 
-            // Save to user's watermark settings
-            this.tikTokPlugin.watermarkSettings.set(userId, updatedStyle);
+**Benefits now active:**
+✅ Better download success rate
+✅ Access to higher quality videos  
+✅ Reduced 403 errors
+✅ More reliable downloads
 
-            const confirmText = `✅ *Custom Watermark Set!*
-
-**Module:** ${style.module}
-**Style:** ${style.originalName.toUpperCase()}
-**Custom Text:** "${customText}"
-**Effect:** ${style.effect || style.glassColor || "Custom"}
-
-Your custom watermark is ready to use!`;
+Your downloads should work much better now!`;
 
             const keyboard = {
                 inline_keyboard: [
-                    [{ text: "🎥 Use Wmtiktok Now", callback_data: "tiktok_wmtiktok" }],
-                    [{ text: "🏠 Back to Menu", callback_data: "tiktok_back_to_main" }]
-                ]
+                [{ text: '🎥 Try Wmtiktok', callback_data: 'tiktok_wmtiktok' },
+                 { text: '📱 Try Nrmtiktok', callback_data: 'tiktok_nrmtiktok' }],
+                [{ text: '🏠 Back to Menu', callback_data: 'tiktok_back_to_main' }]
+            ]
             };
 
-            await this.bot.sendMessage(chatId, confirmText, {
-                parse_mode: "Markdown",
+            this.bot.sendMessage(chatId, successMessage, {
+                parse_mode: 'Markdown',
                 reply_markup: keyboard
             });
-
+            
             // Clear user state
             botManager.clearUserState(userId);
-
+            
         } catch (error) {
-            console.error("Error handling custom text input:", error);
-            await this.bot.sendMessage(chatId, `❌ Error setting custom text: ${error.message}`);
-            botManager.clearUserState(userId);
+            console.error('Cookie setting error:', error);
+            this.bot.sendMessage(chatId, `❌ Error setting cookie: ${error.message}\n\nPlease make sure you copied the correct cookie string.`);
         }
+    }
+
+    // Handle Wmtiktok download input
+    async handleWmTikTokInput(msg, userState, botManager) {
+        const chatId = msg.chat.id;
+        const userId = msg.from.id;
+        const url = msg.text.trim();
+
+        // Validate TikTok URL
+        if (!url.includes('tiktok.com')) {
+            this.bot.sendMessage(chatId, '❌ Please provide a valid TikTok URL');
+            return;
+        }
+
+        try {
+            const processingMsg = await this.bot.sendMessage(chatId, '⏳ Downloading TikTok video with watermark...');
+            
+            // Use the plugin's download method with watermark
+            const mockMessage = {
+                from: userId,
+                reply: (content, options) => {
+                    if (Buffer.isBuffer(content)) {
+                        return this.bot.sendVideo(chatId, content, options);
+                    } else {
+                        return this.bot.editMessageText(content, {
+                            chat_id: chatId,
+                            message_id: processingMsg.message_id,
+                            parse_mode: 'Markdown'
+                        });
+                    }
+                }
+            };
+
+            await this.tikTokPlugin.handleWmTikTok(mockMessage, [url]);
+            
+            // Clear user state
+            botManager.clearUserState(userId);
+            
+        } catch (error) {
+            console.error('Wmtiktok error:', error);
+            this.bot.sendMessage(chatId, `❌ Error: ${error.message}`);
+        }
+    }
+
+    // Handle Nrmtiktok download input (clean download)
+    async handleNrmTikTokInput(msg, userState, botManager) {
+        const chatId = msg.chat.id;
+        const userId = msg.from.id;
+        const url = msg.text.trim();
+        const fs = require('fs');
+
+        // Validate TikTok URL
+        if (!url.includes('tiktok.com')) {
+            this.bot.sendMessage(chatId, '❌ Please provide a valid TikTok URL');
+            return;
+        }
+
+        try {
+            const processingMsg = await this.bot.sendMessage(chatId, '⏳ Downloading clean TikTok video...');
+            
+            // Download video without watermark
+            const videoPath = await this.tikTokPlugin.downloadTikTokVideo(url, Boolean(this.tikTokPlugin.tiktokCookie));
+            
+            // Send the clean video directly (no watermark processing)
+            const videoBuffer = fs.readFileSync(videoPath);
+            await this.bot.sendVideo(chatId, videoBuffer, { 
+                caption: '✅ Clean TikTok video downloaded successfully!\n📱 No watermarks added - completely clean!'
+            });
+
+            // Clean up temp file
+            fs.unlinkSync(videoPath);
+            
+            // Delete processing message
+            this.bot.deleteMessage(chatId, processingMsg.message_id);
+            
+            // Clear user state
+            botManager.clearUserState(userId);
+            
+        } catch (error) {
+            console.error('Nrmtiktok error:', error);
+            this.bot.sendMessage(chatId, `❌ Error: ${error.message}`);
+        }
+    }
+
+    // Handle custom text input for watermark
+    handleCustomTextInput(msg, userState, botManager) {
+        const chatId = msg.chat.id;
+        const userId = msg.from.id;
+        const customText = msg.text.trim();
+        const styleName = userState.styleName;
+
+        if (!customText) {
+            this.bot.sendMessage(chatId, '❌ Please provide some text for your watermark');
+            return;
+        }
+
+        const style = this.tikTokPlugin.styles[styleName];
+        if (!style) {
+            this.bot.sendMessage(chatId, '❌ Style not found');
+            return;
+        }
+
+        // Set the style with custom text
+        const newSettings = { ...style, text: customText };
+        this.tikTokPlugin.watermarkSettings.set(userId, newSettings);
+
+        const confirmMessage = `✅ *Custom Watermark Set!*
+
+**Style:** ${styleName.toUpperCase()}
+**Your Text:** ${customText}
+**Effect:** ${style.effect}
+
+Your custom watermark is ready to use!`;
+
+        const keyboard = {
+            inline_keyboard: [
+                [{ text: '🎥 Use Wmtiktok Now', callback_data: 'tiktok_wmtiktok' }],
+                [{ text: '🏠 Back to Menu', callback_data: 'tiktok_back_to_main' }]
+            ]
+        };
+
+        this.bot.sendMessage(chatId, confirmMessage, {
+            parse_mode: 'Markdown',
+            reply_markup: keyboard
+        });
+        
+        // Clear user state
+        botManager.clearUserState(userId);
     }
 }
 
