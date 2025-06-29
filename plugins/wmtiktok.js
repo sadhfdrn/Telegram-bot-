@@ -5,6 +5,7 @@ const axios = require('axios');
 const tiktokdl = require('@tobyg74/tiktok-api-dl');
 const { promisify } = require('util');
 const { exec } = require('child_process');
+const sharp = require('sharp'); // For image processing
 
 class TikTokWatermarkPlugin {
     constructor() {
@@ -100,12 +101,12 @@ class TikTokWatermarkPlugin {
             }
         };
 
-        // Check FFmpeg installation on initialization
-        this.checkFFmpeg();
+        // Check dependencies on initialization
+        this.checkDependencies();
     }
 
-    // Check if FFmpeg is installed
-    async checkFFmpeg() {
+    // Check if all dependencies are installed
+    async checkDependencies() {
         try {
             await promisify(exec)('ffmpeg -version');
             console.log('✅ FFmpeg is installed and working');
@@ -114,6 +115,13 @@ class TikTokWatermarkPlugin {
             console.error('Ubuntu/Debian: sudo apt install ffmpeg');
             console.error('macOS: brew install ffmpeg');
             console.error('Windows: Download from https://ffmpeg.org/');
+        }
+
+        try {
+            require('sharp');
+            console.log('✅ Sharp is installed and working');
+        } catch (error) {
+            console.error('❌ Sharp not found! Please install: npm install sharp');
         }
     }
 
@@ -133,8 +141,8 @@ class TikTokWatermarkPlugin {
         return this.tiktokCookie ? 'Cookie is set' : 'No cookie set';
     }
 
-    // Enhanced download with multiple fallback methods
-    async downloadTikTokVideo(url, useAdvancedFeatures = false) {
+    // Enhanced download with support for multiple media types
+    async downloadTikTokMedia(url, useAdvancedFeatures = false) {
         const methods = [
             () => this.downloadWithTobyAPI(url, useAdvancedFeatures),
             () => this.downloadWithAlternativeAPI(url),
@@ -156,7 +164,7 @@ class TikTokWatermarkPlugin {
         }
     }
 
-    // Method 1: Enhanced Toby API with better error handling
+    // Enhanced Toby API with multi-media support
     async downloadWithTobyAPI(url, useAdvancedFeatures = false) {
         try {
             console.log('📥 Using Toby API...');
@@ -183,25 +191,86 @@ class TikTokWatermarkPlugin {
                 throw new Error(result.message || 'API returned unsuccessful status');
             }
             
-            let videoUrl = this.extractVideoUrl(result.result);
+            const mediaData = await this.extractMediaData(result.result);
             
-            if (!videoUrl) {
-                throw new Error('No video URL found in API response');
+            if (!mediaData || mediaData.length === 0) {
+                throw new Error('No media found in API response');
             }
             
-            console.log('📱 Video info:', {
+            console.log('📱 Media info:', {
                 title: result.result.desc || result.result.title || 'No title',
-                author: result.result.author?.nickname || result.result.author?.username || 'Unknown'
+                author: result.result.author?.nickname || result.result.author?.username || 'Unknown',
+                mediaCount: mediaData.length,
+                types: mediaData.map(m => m.type).join(', ')
             });
             
-            return await this.downloadVideoFile(videoUrl, 'toby_api');
+            return await this.downloadMediaFiles(mediaData, 'toby_api');
             
         } catch (error) {
             throw new Error(`Toby API failed: ${error.message}`);
         }
     }
 
-    // Method 2: Alternative API approach
+    // Extract media data supporting videos, images, and carousels
+    async extractMediaData(result) {
+        const mediaData = [];
+
+        // Check for single video
+        const videoUrl = this.extractVideoUrl(result);
+        if (videoUrl) {
+            mediaData.push({
+                type: 'video',
+                url: videoUrl,
+                index: 0
+            });
+        }
+
+        // Check for image carousel/slideshow
+        if (result.images && Array.isArray(result.images)) {
+            result.images.forEach((imageUrl, index) => {
+                if (imageUrl) {
+                    mediaData.push({
+                        type: 'image',
+                        url: imageUrl,
+                        index: index
+                    });
+                }
+            });
+        }
+
+        // Check for alternative image formats
+        if (result.image_post_info && result.image_post_info.images) {
+            result.image_post_info.images.forEach((imageData, index) => {
+                const imageUrl = imageData.display_image?.url_list?.[0] || 
+                               imageData.owner_watermark_image?.url_list?.[0];
+                if (imageUrl) {
+                    mediaData.push({
+                        type: 'image',
+                        url: imageUrl,
+                        index: index
+                    });
+                }
+            });
+        }
+
+        // Check for carousel videos (multiple video parts)
+        if (result.video_list && Array.isArray(result.video_list)) {
+            result.video_list.forEach((videoData, index) => {
+                const videoUrl = videoData.play_addr?.url_list?.[0] || videoData;
+                if (videoUrl) {
+                    mediaData.push({
+                        type: 'video',
+                        url: videoUrl,
+                        index: index
+                    });
+                }
+            });
+        }
+
+        return mediaData;
+    }
+
+    // Alternative API with multi-media support
     async downloadWithAlternativeAPI(url) {
         try {
             console.log('📥 Using alternative API...');
@@ -228,10 +297,33 @@ class TikTokWatermarkPlugin {
                     });
 
                     if (response.data && response.data.code === 0 && response.data.data) {
-                        const videoUrl = response.data.data.play || response.data.data.wmplay;
+                        const mediaData = [];
+                        const data = response.data.data;
+
+                        // Check for video
+                        const videoUrl = data.play || data.wmplay;
                         if (videoUrl) {
+                            mediaData.push({
+                                type: 'video',
+                                url: videoUrl,
+                                index: 0
+                            });
+                        }
+
+                        // Check for images
+                        if (data.images && Array.isArray(data.images)) {
+                            data.images.forEach((imageUrl, index) => {
+                                mediaData.push({
+                                    type: 'image',
+                                    url: imageUrl,
+                                    index: index
+                                });
+                            });
+                        }
+
+                        if (mediaData.length > 0) {
                             console.log('✅ Alternative API successful');
-                            return await this.downloadVideoFile(videoUrl, 'alternative_api');
+                            return await this.downloadMediaFiles(mediaData, 'alternative_api');
                         }
                     }
                 } catch (error) {
@@ -247,7 +339,7 @@ class TikTokWatermarkPlugin {
         }
     }
 
-    // Method 3: Direct download method (placeholder)
+    // Placeholder for direct method
     async downloadWithDirectMethod(url) {
         throw new Error('Direct method not implemented yet');
     }
@@ -294,38 +386,60 @@ class TikTokWatermarkPlugin {
         return null;
     }
 
-    // Enhanced video file download with better error handling
-    async downloadVideoFile(videoUrl, method = 'unknown') {
+    // Download multiple media files
+    async downloadMediaFiles(mediaData, method = 'unknown') {
+        const downloadedFiles = [];
+
+        for (const media of mediaData) {
+            try {
+                console.log(`⬇️ Downloading ${media.type} ${media.index + 1}/${mediaData.length}...`);
+                
+                const extension = media.type === 'video' ? 'mp4' : 'jpg';
+                const filePath = await this.downloadSingleFile(
+                    media.url, 
+                    `${method}_${media.type}_${media.index}.${extension}`
+                );
+
+                downloadedFiles.push({
+                    path: filePath,
+                    type: media.type,
+                    index: media.index
+                });
+
+            } catch (error) {
+                console.error(`Failed to download ${media.type} ${media.index}: ${error.message}`);
+            }
+        }
+
+        if (downloadedFiles.length === 0) {
+            throw new Error('No media files were downloaded successfully');
+        }
+
+        return downloadedFiles;
+    }
+
+    // Download single file (video or image)
+    async downloadSingleFile(url, filename) {
         try {
-            console.log(`⬇️ Downloading video file using ${method}...`);
-            
-            const response = await axios.get(videoUrl, {
+            const response = await axios.get(url, {
                 responseType: 'stream',
                 timeout: 60000,
                 maxRedirects: 5,
                 headers: {
                     'User-Agent': this.getRandomUserAgent(),
                     'Referer': 'https://www.tiktok.com/',
-                    'Accept': 'video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5',
+                    'Accept': '*/*',
                     'Accept-Language': 'en-US,en;q=0.9',
                     'Accept-Encoding': 'gzip, deflate, br',
-                    'Connection': 'keep-alive',
-                    'Upgrade-Insecure-Requests': '1'
-                },
-                validateStatus: (status) => {
-                    return status < 400;
+                    'Connection': 'keep-alive'
                 }
             });
-
-            if (response.status === 403) {
-                throw new Error('Access forbidden (403) - TikTok blocked the request');
-            }
 
             if (response.status >= 400) {
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
 
-            const tempPath = path.join(__dirname, 'temp', `tiktok_${Date.now()}_${method}.mp4`);
+            const tempPath = path.join(__dirname, 'temp', filename);
             
             // Ensure temp directory exists
             if (!fs.existsSync(path.dirname(tempPath))) {
@@ -344,7 +458,7 @@ class TikTokWatermarkPlugin {
                             reject(new Error('Downloaded file is empty'));
                             return;
                         }
-                        console.log(`✅ Video downloaded successfully (${stats.size} bytes)`);
+                        console.log(`✅ File downloaded: ${filename} (${stats.size} bytes)`);
                         resolve(tempPath);
                     } catch (error) {
                         reject(new Error(`Failed to verify downloaded file: ${error.message}`));
@@ -354,37 +468,17 @@ class TikTokWatermarkPlugin {
                 writer.on('error', (error) => {
                     try {
                         fs.unlinkSync(tempPath);
-                    } catch (e) {
-                        // Ignore cleanup errors
-                    }
+                    } catch (e) {}
                     reject(new Error(`Download failed: ${error.message}`));
-                });
-
-                response.data.on('error', (error) => {
-                    writer.destroy();
-                    try {
-                        fs.unlinkSync(tempPath);
-                    } catch (e) {
-                        // Ignore cleanup errors
-                    }
-                    reject(new Error(`Stream error: ${error.message}`));
                 });
             });
 
         } catch (error) {
-            if (error.code === 'ECONNABORTED') {
-                throw new Error('Download timeout - TikTok server is slow');
-            } else if (error.code === 'ENOTFOUND') {
-                throw new Error('Network error - check your internet connection');
-            } else if (error.response?.status === 403) {
-                throw new Error('Access forbidden - TikTok blocked the request. Try using a cookie.');
-            } else {
-                throw new Error(`Download failed: ${error.message}`);
-            }
+            throw new Error(`Download failed: ${error.message}`);
         }
     }
 
-    // Simplified watermark filter for Linux compatibility
+    // Generate watermark filter for videos
     generateWatermarkFilter(settings) {
         const { text, fontSize = 24, color = 'white', opacity = 0.48, position = 'bottom-right' } = settings;
         
@@ -398,22 +492,18 @@ class TikTokWatermarkPlugin {
         
         const pos = positions[position] || positions['bottom-right'];
         
-        // Simplified filter that works across platforms
         return `drawtext=text='${text}':fontsize=${fontSize}:fontcolor=${color}@${opacity}:${pos}:shadowcolor=black@0.5:shadowx=2:shadowy=2`;
     }
 
-    // Add watermark to video with better error handling
+    // Add watermark to video
     async addWatermarkToVideo(inputPath, outputPath, watermarkSettings) {
         return new Promise((resolve, reject) => {
-            // Check if input file exists
             if (!fs.existsSync(inputPath)) {
                 reject(new Error('Input video file not found'));
                 return;
             }
 
             const filter = this.generateWatermarkFilter(watermarkSettings);
-            
-            console.log('🎨 Applying watermark filter:', filter);
             
             ffmpeg(inputPath)
                 .videoFilter(filter)
@@ -425,71 +515,194 @@ class TikTokWatermarkPlugin {
                     '-avoid_negative_ts make_zero'
                 ])
                 .output(outputPath)
-                .on('start', (commandLine) => {
-                    console.log('🎬 FFmpeg command:', commandLine);
-                })
                 .on('progress', (progress) => {
                     if (progress.percent) {
-                        console.log(`📊 Processing: ${Math.round(progress.percent)}%`);
+                        console.log(`📊 Video processing: ${Math.round(progress.percent)}%`);
                     }
                 })
                 .on('end', () => {
-                    console.log('✅ Watermark added successfully');
                     resolve(outputPath);
                 })
                 .on('error', (err) => {
-                    console.error('❌ Error adding watermark:', err.message);
                     reject(new Error(`FFmpeg error: ${err.message}`));
                 })
                 .run();
         });
     }
 
-    // Enhanced wmtiktok handler with better error messages
+    // Add watermark to image using Sharp
+    async addWatermarkToImage(inputPath, outputPath, watermarkSettings) {
+        try {
+            const { text, fontSize = 24, color = 'white', opacity = 0.48, position = 'bottom-right' } = watermarkSettings;
+            
+            const image = sharp(inputPath);
+            const metadata = await image.metadata();
+            
+            // Calculate watermark position
+            const textWidth = text.length * (fontSize * 0.6);
+            const textHeight = fontSize * 1.2;
+            
+            let x, y;
+            switch (position) {
+                case 'top-left':
+                    x = 50;
+                    y = 50;
+                    break;
+                case 'top-right':
+                    x = metadata.width - textWidth - 50;
+                    y = 50;
+                    break;
+                case 'bottom-left':
+                    x = 50;
+                    y = metadata.height - textHeight - 50;
+                    break;
+                case 'center':
+                    x = (metadata.width - textWidth) / 2;
+                    y = (metadata.height - textHeight) / 2;
+                    break;
+                default: // bottom-right
+                    x = metadata.width - textWidth - 50;
+                    y = metadata.height - textHeight - 50;
+            }
+
+            // Create watermark SVG
+            const watermarkSvg = `
+                <svg width="${metadata.width}" height="${metadata.height}">
+                    <text x="${x}" y="${y}" 
+                          font-family="Arial" 
+                          font-size="${fontSize}" 
+                          fill="${color}" 
+                          fill-opacity="${opacity}"
+                          stroke="black" 
+                          stroke-width="1" 
+                          stroke-opacity="0.5">
+                        ${text}
+                    </text>
+                </svg>
+            `;
+
+            await image
+                .composite([{
+                    input: Buffer.from(watermarkSvg),
+                    blend: 'over'
+                }])
+                .jpeg({ quality: 90 })
+                .toFile(outputPath);
+
+            return outputPath;
+
+        } catch (error) {
+            throw new Error(`Image watermark error: ${error.message}`);
+        }
+    }
+
+    // Process all downloaded media files
+    async processMediaFiles(mediaFiles, watermarkSettings) {
+        const processedFiles = [];
+
+        for (const mediaFile of mediaFiles) {
+            try {
+                const outputPath = path.join(
+                    path.dirname(mediaFile.path), 
+                    `watermarked_${path.basename(mediaFile.path)}`
+                );
+
+                console.log(`🎨 Processing ${mediaFile.type} ${mediaFile.index + 1}...`);
+
+                if (mediaFile.type === 'video') {
+                    await this.addWatermarkToVideo(mediaFile.path, outputPath, watermarkSettings);
+                } else if (mediaFile.type === 'image') {
+                    await this.addWatermarkToImage(mediaFile.path, outputPath, watermarkSettings);
+                }
+
+                processedFiles.push({
+                    path: outputPath,
+                    type: mediaFile.type,
+                    index: mediaFile.index,
+                    originalPath: mediaFile.path
+                });
+
+            } catch (error) {
+                console.error(`Failed to process ${mediaFile.type} ${mediaFile.index}: ${error.message}`);
+            }
+        }
+
+        return processedFiles;
+    }
+
+    // Enhanced wmtiktok handler with multi-media support
     async handleWmTikTok(message, args) {
         try {
             if (!args[0]) {
-                return message.reply('Please provide a TikTok URL\nUsage: wmtiktok <tiktok_url>');
+                return message.reply('Please provide a TikTok URL\nUsage: wmtiktok <tiktok_url>\n\n✨ Supports:\n• Single videos\n• Image carousels\n• Multiple media posts');
             }
 
             const url = args[0];
             const userId = message.from || message.chat?.id || 'default';
             const userSettings = this.watermarkSettings.get(userId) || this.defaultWatermark;
 
-            await message.reply('⏳ Downloading TikTok video...');
+            await message.reply('⏳ Downloading TikTok media...');
 
             try {
-                // Download video with enhanced error handling
-                const videoPath = await this.downloadTikTokVideo(url, Boolean(this.tiktokCookie));
+                // Download all media files
+                const mediaFiles = await this.downloadTikTokMedia(url, Boolean(this.tiktokCookie));
                 
-                await message.reply('🎨 Adding watermark...');
+                await message.reply(`🎨 Processing ${mediaFiles.length} media file(s)...`);
                 
-                // Add watermark
-                const outputPath = path.join(__dirname, 'temp', `watermarked_${Date.now()}.mp4`);
-                await this.addWatermarkToVideo(videoPath, outputPath, userSettings);
+                // Process all files with watermarks
+                const processedFiles = await this.processMediaFiles(mediaFiles, userSettings);
 
-                // Send the watermarked video
-                const videoBuffer = fs.readFileSync(outputPath);
-                await message.reply(videoBuffer, { 
-                    mimetype: 'video/mp4',
-                    caption: `✅ Watermarked with style: ${userSettings.effect || 'default'}\n🍪 Cookie status: ${this.getCookieStatus()}`
-                });
+                if (processedFiles.length === 0) {
+                    throw new Error('No files were processed successfully');
+                }
+
+                // Send all processed files
+                for (const file of processedFiles) {
+                    try {
+                        const fileBuffer = fs.readFileSync(file.path);
+                        const mimetype = file.type === 'video' ? 'video/mp4' : 'image/jpeg';
+                        const caption = processedFiles.length > 1 ? 
+                            `${file.type.toUpperCase()} ${file.index + 1}/${processedFiles.length}` : 
+                            `✅ Watermarked ${file.type}`;
+
+                        await message.reply(fileBuffer, { 
+                            mimetype: mimetype,
+                            caption: caption
+                        });
+                    } catch (sendError) {
+                        console.error(`Failed to send ${file.type} ${file.index}:`, sendError.message);
+                    }
+                }
+
+                // Send summary
+                const summary = `✅ Processed ${processedFiles.length} file(s)\n` +
+                              `🎨 Style: ${userSettings.effect || 'default'}\n` +
+                              `🍪 Cookie status: ${this.getCookieStatus()}`;
+                await message.reply(summary);
 
                 // Clean up temp files
-                if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
-                if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+                [...mediaFiles, ...processedFiles].forEach(file => {
+                    try {
+                        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+                        if (file.originalPath && fs.existsSync(file.originalPath)) {
+                            fs.unlinkSync(file.originalPath);
+                        }
+                    } catch (e) {}
+                });
 
             } catch (downloadError) {
-                let errorMessage = '❌ Download failed: ';
+                let errorMessage = '❌ Processing failed: ';
                 
                 if (downloadError.message.includes('403')) {
-                    errorMessage += 'TikTok blocked the request. Try:\n• Using a different video URL\n• Setting a TikTok cookie with "setcookie" command\n• Waiting a few minutes before trying again';
+                    errorMessage += 'TikTok blocked the request. Try:\n• Using a different URL\n• Setting a TikTok cookie\n• Waiting before trying again';
                 } else if (downloadError.message.includes('timeout')) {
-                    errorMessage += 'Download timed out. The video might be too large or TikTok servers are slow. Try again later.';
-                } else if (downloadError.message.includes('No video URL')) {
-                    errorMessage += 'Could not find video in TikTok response. The video might be private or deleted.';
+                    errorMessage += 'Download timed out. Try again later.';
+                } else if (downloadError.message.includes('No media')) {
+                    errorMessage += 'Could not find media in TikTok post. The content might be private or deleted.';
                 } else if (downloadError.message.includes('ffmpeg') || downloadError.message.includes('FFmpeg')) {
-                    errorMessage += 'FFmpeg is not installed. Please install FFmpeg:\n• Ubuntu/Debian: sudo apt install ffmpeg\n• macOS: brew install ffmpeg';
+                    errorMessage += 'FFmpeg is not installed. Please install FFmpeg.';
+                } else if (downloadError.message.includes('sharp') || downloadError.message.includes('Sharp')) {
+                    errorMessage += 'Sharp is not installed. Please install: npm install sharp';
                 } else {
                     errorMessage += downloadError.message;
                 }
@@ -517,14 +730,15 @@ class TikTokWatermarkPlugin {
 
 **Benefits:**
 • Bypasses 403 errors
-• Access to higher quality videos
-• Better download success rate`);
+• Access to higher quality media
+• Better download success rate
+• Support for private/restricted content`);
             }
 
             const cookie = args.join(' ');
             this.setTikTokCookie(cookie);
             
-            await message.reply('✅ TikTok cookie set successfully!\n🔓 Enhanced download features enabled.');
+            await message.reply('✅ TikTok cookie set successfully!\n🔓 Enhanced download features enabled for all media types.');
 
         } catch (error) {
             console.error('Error in setcookie command:', error);
@@ -536,7 +750,7 @@ class TikTokWatermarkPlugin {
         try {
             const status = this.getCookieStatus();
             const features = this.tiktokCookie ? 
-                '✅ Enhanced downloads enabled\n✅ Better 403 error bypass\n✅ Higher success rate' : 
+                '✅ Enhanced downloads enabled\n✅ Multi-media support active\n✅ Better 403 error bypass\n✅ Higher success rate' : 
                 '❌ Basic downloads only\n❌ May encounter 403 errors\n❌ Limited success rate';
             
             await message.reply(`🍪 **Cookie Status:** ${status}\n\n${features}`);
@@ -553,7 +767,7 @@ class TikTokWatermarkPlugin {
             
             if (!args[0]) {
                 const stylesList = Object.keys(this.styles).map(style => `• ${style}`).join('\n');
-                return message.reply(`🎨 Available watermark styles:\n${stylesList}\n\nUsage: setwatermark <style> [text]\nExample: setwatermark neon MyName`);
+                return message.reply(`🎨 Available watermark styles:\n${stylesList}\n\nUsage: setwatermark <style> [text]\nExample: setwatermark neon MyName\n\n✨ Works on both videos and images!`);
             }
 
             const styleName = args[0].toLowerCase();
@@ -570,7 +784,7 @@ class TikTokWatermarkPlugin {
 
             this.watermarkSettings.set(userId, newSettings);
             
-            await message.reply(`✅ Watermark set to "${styleName}" style${customText ? ` with text: "${customText}"` : ''}`);
+            await message.reply(`✅ Watermark set to "${styleName}" style${customText ? ` with text: "${customText}"` : ''}\n🎨 Will be applied to all media types (videos & images)`);
 
         } catch (error) {
             console.error('Error in setwatermark command:', error);
@@ -585,10 +799,11 @@ class TikTokWatermarkPlugin {
         bot.command('setcookie', (message, args) => this.handleSetCookie(message, args));
         bot.command('cookiestatus', (message, args) => this.handleCookieStatus(message, args));
         
-        console.log('🔧 Enhanced TikTok Plugin initialized with fixes');
+        console.log('🔧 Enhanced TikTok Plugin initialized with multi-media support');
+        console.log('🎬 Supports: Videos, Images, Carousels, Multi-media posts');
         console.log('🛡️ Multiple download fallback methods enabled');
         console.log('🍪 Cookie support available for better success rates');
-        console.log('🎬 FFmpeg compatibility improved');
+        console.log('🎨 Watermarking works on all media types');
     }
 }
 
