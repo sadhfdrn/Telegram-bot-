@@ -646,29 +646,43 @@ async handleNrmTikTokInput(msg, userState, botManager) {
     }
 
     try {
-        const processingMsg = await this.bot.sendMessage(chatId, '⏳ Downloading clean TikTok video...');
+        const processingMsg = await this.bot.sendMessage(chatId, '⏳ Downloading clean TikTok media...');
 
-        // Download video without watermark
         const mediaFiles = await this.tikTokPlugin.downloadTikTokMedia(url, Boolean(this.tikTokPlugin.tiktokCookie));
-        const videoFile = mediaFiles.find(f => f.type === 'video');
 
-        if (!videoFile) {
-            throw new Error('No video file found in media');
+        const videoFile = mediaFiles.find(f => f.type === 'video');
+        const imageFiles = mediaFiles.filter(f => f.type === 'image');
+
+        if (!videoFile && imageFiles.length === 0) {
+            throw new Error('No media found in this TikTok post');
         }
 
-        // Send the clean video directly (no watermark processing)
-        const videoBuffer = fs.readFileSync(videoFile.path);
-        await this.bot.sendVideo(chatId, videoBuffer, {
-            caption: '✅ Clean TikTok video downloaded successfully!\n📱 No watermarks added - completely clean!'
-        });
+        // Send clean video if available
+        if (videoFile) {
+            const videoBuffer = fs.readFileSync(videoFile.path);
+            await this.bot.sendVideo(chatId, videoBuffer, {
+                caption: '✅ Clean TikTok video downloaded successfully!\n📱 No watermarks added - completely clean!'
+            });
+            fs.unlinkSync(videoFile.path);
+        }
 
-        // Clean up temp file
-        fs.unlinkSync(videoFile.path);
+        // Send image group if available
+        if (imageFiles.length > 0) {
+            const mediaGroup = imageFiles.map((img, index) => ({
+                type: 'photo',
+                media: { source: img.path },
+                ...(index === 0 && { caption: `🖼️ Clean TikTok images (${imageFiles.length})` })
+            }));
 
-        // Delete processing message
+            await this.bot.sendMediaGroup(chatId, mediaGroup);
+
+            // Cleanup files
+            for (const img of imageFiles) {
+                fs.unlinkSync(img.path);
+            }
+        }
+
         this.bot.deleteMessage(chatId, processingMsg.message_id);
-
-        // Clear user state
         botManager.clearUserState(userId);
 
     } catch (error) {
