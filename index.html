@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Replit Keep-Alive</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: white;
+        }
+        
+        .container {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+        
+        .status {
+            background: rgba(0, 255, 0, 0.2);
+            border: 1px solid rgba(0, 255, 0, 0.5);
+            border-radius: 8px;
+            padding: 15px;
+            margin: 20px 0;
+            text-align: center;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+        
+        button {
+            background: rgba(255, 255, 255, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 14px;
+        }
+        
+        button:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-2px);
+        }
+        
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .log {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            padding: 15px;
+            height: 200px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+            margin-top: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .config {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin: 20px 0;
+        }
+        
+        .config label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 14px;
+        }
+        
+        input, select {
+            width: 100%;
+            padding: 8px;
+            border-radius: 4px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+        }
+        
+        input::placeholder {
+            color: rgba(255, 255, 255, 0.7);
+        }
+        
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        
+        .stat-card {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        
+        .stat-number {
+            font-size: 24px;
+            font-weight: bold;
+            color: #4ade80;
+        }
+        
+        .invisible-cursor {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            opacity: 0;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Replit Keep-Alive Manager</h1>
+        <p>Simulate user activity to keep your Replit app running</p>
+        
+        <div class="status" id="status">
+            Status: Stopped
+        </div>
+        
+        <div class="config">
+            <div>
+                <label for="mouseInterval">Mouse Movement Interval (seconds)</label>
+                <input type="number" id="mouseInterval" value="30" min="5" max="300">
+            </div>
+            <div>
+                <label for="keyInterval">Keyboard Activity Interval (seconds)</label>
+                <input type="number" id="keyInterval" value="45" min="5" max="300">
+            </div>
+            <div>
+                <label for="scrollInterval">Scroll Activity Interval (seconds)</label>
+                <input type="number" id="scrollInterval" value="60" min="10" max="300">
+            </div>
+            <div>
+                <label for="clickInterval">Random Click Interval (seconds)</label>
+                <input type="number" id="clickInterval" value="90" min="10" max="300">
+            </div>
+        </div>
+        
+        <div class="controls">
+            <button id="startBtn" onclick="startKeepAlive()">Start Keep-Alive</button>
+            <button id="stopBtn" onclick="stopKeepAlive()" disabled>Stop Keep-Alive</button>
+            <button onclick="testActivity()">Test Activity</button>
+            <button onclick="clearLog()">Clear Log</button>
+        </div>
+        
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-number" id="mouseCount">0</div>
+                <div>Mouse Moves</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="keyCount">0</div>
+                <div>Key Presses</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="scrollCount">0</div>
+                <div>Scroll Events</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="clickCount">0</div>
+                <div>Click Events</div>
+            </div>
+        </div>
+        
+        <div class="log" id="log"></div>
+    </div>
+    
+    <!-- Invisible elements for interaction -->
+    <div class="invisible-cursor" id="invisibleCursor"></div>
+    
+    <script>
+        let keepAliveIntervals = [];
+        let isRunning = false;
+        let stats = {
+            mouse: 0,
+            key: 0,
+            scroll: 0,
+            click: 0
+        };
+        
+        function log(message) {
+            const logElement = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString();
+            logElement.innerHTML += `[${timestamp}] ${message}\n`;
+            logElement.scrollTop = logElement.scrollHeight;
+        }
+        
+        function updateStats() {
+            document.getElementById('mouseCount').textContent = stats.mouse;
+            document.getElementById('keyCount').textContent = stats.key;
+            document.getElementById('scrollCount').textContent = stats.scroll;
+            document.getElementById('clickCount').textContent = stats.click;
+        }
+        
+        function simulateMouseMovement() {
+            const x = Math.random() * window.innerWidth;
+            const y = Math.random() * window.innerHeight;
+            
+            // Create and dispatch mouse event
+            const mouseEvent = new MouseEvent('mousemove', {
+                clientX: x,
+                clientY: y,
+                bubbles: true,
+                cancelable: true
+            });
+            
+            document.dispatchEvent(mouseEvent);
+            
+            // Also move invisible cursor element
+            const cursor = document.getElementById('invisibleCursor');
+            cursor.style.left = x + 'px';
+            cursor.style.top = y + 'px';
+            
+            stats.mouse++;
+            updateStats();
+            log(`Mouse moved to (${Math.round(x)}, ${Math.round(y)})`);
+        }
+        
+        function simulateKeyPress() {
+            const keys = ['Shift', 'Control', 'Alt', 'Tab', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+            const randomKey = keys[Math.floor(Math.random() * keys.length)];
+            
+            // Key down
+            const keyDownEvent = new KeyboardEvent('keydown', {
+                key: randomKey,
+                bubbles: true,
+                cancelable: true
+            });
+            document.dispatchEvent(keyDownEvent);
+            
+            // Key up
+            setTimeout(() => {
+                const keyUpEvent = new KeyboardEvent('keyup', {
+                    key: randomKey,
+                    bubbles: true,
+                    cancelable: true
+                });
+                document.dispatchEvent(keyUpEvent);
+            }, 50);
+            
+            stats.key++;
+            updateStats();
+            log(`Key pressed: ${randomKey}`);
+        }
+        
+        function simulateScroll() {
+            const scrollAmount = Math.random() * 200 - 100; // Random scroll between -100 and 100
+            
+            const scrollEvent = new WheelEvent('wheel', {
+                deltaY: scrollAmount,
+                bubbles: true,
+                cancelable: true
+            });
+            
+            document.dispatchEvent(scrollEvent);
+            
+            // Actually scroll the page slightly
+            window.scrollBy(0, scrollAmount / 10);
+            
+            stats.scroll++;
+            updateStats();
+            log(`Scroll simulated: ${Math.round(scrollAmount)}px`);
+        }
+        
+        function simulateClick() {
+            const x = Math.random() * window.innerWidth;
+            const y = Math.random() * window.innerHeight;
+            
+            // Find element at coordinates (avoid clicking buttons)
+            const element = document.elementFromPoint(x, y);
+            if (element && !['BUTTON', 'INPUT', 'SELECT'].includes(element.tagName)) {
+                const clickEvent = new MouseEvent('click', {
+                    clientX: x,
+                    clientY: y,
+                    bubbles: true,
+                    cancelable: true
+                });
+                
+                element.dispatchEvent(clickEvent);
+                
+                stats.click++;
+                updateStats();
+                log(`Click simulated at (${Math.round(x)}, ${Math.round(y)}) on ${element.tagName}`);
+            }
+        }
+        
+        function startKeepAlive() {
+            if (isRunning) return;
+            
+            isRunning = true;
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('stopBtn').disabled = false;
+            document.getElementById('status').innerHTML = 'Status: <span style="color: #4ade80;">Running</span>';
+            
+            log('Keep-alive started!');
+            
+            // Get intervals from inputs
+            const mouseInterval = parseInt(document.getElementById('mouseInterval').value) * 1000;
+            const keyInterval = parseInt(document.getElementById('keyInterval').value) * 1000;
+            const scrollInterval = parseInt(document.getElementById('scrollInterval').value) * 1000;
+            const clickInterval = parseInt(document.getElementById('clickInterval').value) * 1000;
+            
+            // Set up intervals
+            keepAliveIntervals.push(setInterval(simulateMouseMovement, mouseInterval));
+            keepAliveIntervals.push(setInterval(simulateKeyPress, keyInterval));
+            keepAliveIntervals.push(setInterval(simulateScroll, scrollInterval));
+            keepAliveIntervals.push(setInterval(simulateClick, clickInterval));
+            
+            // Also add some randomness
+            keepAliveIntervals.push(setInterval(() => {
+                const actions = [simulateMouseMovement, simulateKeyPress, simulateScroll];
+                const randomAction = actions[Math.floor(Math.random() * actions.length)];
+                randomAction();
+            }, 15000)); // Random action every 15 seconds
+        }
+        
+        function stopKeepAlive() {
+            if (!isRunning) return;
+            
+            isRunning = false;
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+            document.getElementById('status').innerHTML = 'Status: <span style="color: #f87171;">Stopped</span>';
+            
+            // Clear all intervals
+            keepAliveIntervals.forEach(interval => clearInterval(interval));
+            keepAliveIntervals = [];
+            
+            log('Keep-alive stopped!');
+        }
+        
+        function testActivity() {
+            log('Testing all activities...');
+            simulateMouseMovement();
+            setTimeout(simulateKeyPress, 200);
+            setTimeout(simulateScroll, 400);
+            setTimeout(simulateClick, 600);
+        }
+        
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+            stats = { mouse: 0, key: 0, scroll: 0, click: 0 };
+            updateStats();
+        }
+        
+        // Handle visibility change to pause when tab is hidden
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden && isRunning) {
+                log('Tab hidden - keep-alive continues in background');
+            } else if (!document.hidden && isRunning) {
+                log('Tab visible - keep-alive active');
+            }
+        });
+        
+        // Initialize
+        log('Keep-alive manager ready!');
+        log('Configure intervals and click Start to begin simulating user activity.');
+        
+        // Prevent the page from being unloaded
+        window.addEventListener('beforeunload', function(e) {
+            if (isRunning) {
+                const message = 'Keep-alive is running. Are you sure you want to leave?';
+                e.returnValue = message;
+                return message;
+            }
+        });
+        
+        // Add some actual user activity detection
+        let realUserActivity = false;
+        ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart'].forEach(event => {
+            document.addEventListener(event, function() {
+                if (!realUserActivity) {
+                    realUserActivity = true;
+                    log('Real user activity detected');
+                    setTimeout(() => { realUserActivity = false; }, 5000);
+                }
+            }, true);
+        });
+    </script>
+</body>
+</html>

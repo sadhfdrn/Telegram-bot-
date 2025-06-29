@@ -32,8 +32,56 @@ class TelegramBotManager {
         this.app.use(express.json());
         this.app.use(express.urlencoded({ extended: true }));
 
-        // Health check endpoint
+        // Serve static files from 'public' directory
+        const publicDir = path.join(__dirname, 'public');
+        if (!fs.existsSync(publicDir)) {
+            fs.mkdirSync(publicDir, { recursive: true });
+            console.log('📁 Created public directory');
+        }
+        this.app.use(express.static(publicDir));
+
+        // Serve index.html at root path
         this.app.get('/', (req, res) => {
+            const indexPath = path.join(__dirname, 'index.html');
+            
+            // Check if index.html exists
+            if (fs.existsSync(indexPath)) {
+                res.sendFile(indexPath);
+            } else {
+                // If index.html doesn't exist, serve the bot status page
+                res.json({
+                    status: 'healthy',
+                    timestamp: new Date().toISOString(),
+                    uptime: process.uptime(),
+                    bot_status: 'running',
+                    commands_loaded: Array.from(this.commands.keys()),
+                    message: 'index.html not found. Place your HTML file in the root directory.'
+                });
+            }
+        });
+
+        // Alternative route to serve index.html explicitly
+        this.app.get('/index.html', (req, res) => {
+            const indexPath = path.join(__dirname, 'index.html');
+            
+            if (fs.existsSync(indexPath)) {
+                res.sendFile(indexPath);
+            } else {
+                res.status(404).send(`
+                    <html>
+                        <head><title>File Not Found</title></head>
+                        <body>
+                            <h1>index.html not found</h1>
+                            <p>Please create an index.html file in the root directory of your project.</p>
+                            <p><a href="/health">Bot Health Check</a></p>
+                        </body>
+                    </html>
+                `);
+            }
+        });
+
+        // Health check endpoint
+        this.app.get('/health', (req, res) => {
             res.json({
                 status: 'healthy',
                 timestamp: new Date().toISOString(),
@@ -44,7 +92,7 @@ class TelegramBotManager {
         });
 
         // Health endpoint for monitoring services
-        this.app.get('/health', (req, res) => {
+        this.app.get('/api/health', (req, res) => {
             res.status(200).json({
                 status: 'ok',
                 service: 'telegram-bot',
@@ -53,7 +101,7 @@ class TelegramBotManager {
         });
 
         // Status endpoint with more details
-        this.app.get('/status', (req, res) => {
+        this.app.get('/api/status', (req, res) => {
             const activeUsers = this.userStates.size;
             const memoryUsage = process.memoryUsage();
             
@@ -75,16 +123,30 @@ class TelegramBotManager {
                 },
                 features: {
                     express_server: 'enabled',
+                    static_files: 'enabled',
                     commands_loaded: Array.from(this.commands.keys())
                 }
             });
         });
 
+        // API endpoint to get bot info (useful for frontend integration)
+        this.app.get('/api/bot-info', (req, res) => {
+            res.json({
+                bot_name: 'Telegram Bot Manager',
+                version: '1.0.0',
+                commands: Array.from(this.commands.keys()),
+                uptime: Math.floor(process.uptime()),
+                status: 'running'
+            });
+        });
+
         // Start Express server
-        this.app.listen(this.port, () => {
+        this.server = this.app.listen(this.port, () => {
             console.log(`🌐 Express server running on port ${this.port}`);
+            console.log(`📄 Serving index.html at: http://localhost:${this.port}/`);
             console.log(`📊 Health check available at: http://localhost:${this.port}/health`);
-            console.log(`📈 Status endpoint: http://localhost:${this.port}/status`);
+            console.log(`📈 Status endpoint: http://localhost:${this.port}/api/status`);
+            console.log(`📁 Static files served from: ${path.join(__dirname, 'public')}`);
         });
     }
 
