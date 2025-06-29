@@ -648,7 +648,7 @@ Your downloads should work much better now!`;
             const processingMsg = await this.bot.sendMessage(chatId, '⏳ Downloading clean TikTok video...');
             
             // Download video without watermark
-            const videoPath = await this.tikTokPlugin.downloadTikTokVideo(url, Boolean(this.tikTokPlugin.tiktokCookie));
+            const videoPath = await this.tikTokPlugin.downloadTikTokMedia(url, Boolean(this.tikTokPlugin.tiktokCookie));
             
             // Send the clean video directly (no watermark processing)
             const videoBuffer = fs.readFileSync(videoPath);
