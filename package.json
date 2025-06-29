@@ -1,6 +1,6 @@
 {
   "name": "telegram-bot-modular",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A modular Telegram bot for fun and automation",
   "main": "telegram.js",
   "scripts": {
@@ -17,15 +17,17 @@
   "license": "MIT",
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
-    "@tobyg74/tiktok-api-dl": "^1.3.2",
+    "@tobyg74/tiktok-api-dl": "^1.2.8",
     "axios": "^1.10.0",
-    "dotenv": "^16.5.0",
+    "cheerio": "^1.1.0",
+    "dotenv": "^17.0.0",
     "express": "^5.1.0",
     "ffmpeg": "^0.0.4",
-    "sharp" :"^0.34.2", 
+    "sharp": "^0.34.2",
     "fluent-ffmpeg": "^2.1.3",
     "node-telegram-bot-api": "^0.66.0",
-    "uuid": "^11.1.0"
+    "uuid": "^11.1.0",
+    "puppeteer": "^24.11.1"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
