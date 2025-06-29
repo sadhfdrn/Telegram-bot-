@@ -590,45 +590,115 @@ Your downloads should work much better now!`;
     }
 
     // Handle Wmtiktok download input
-    async handleWmTikTokInput(msg, userState, botManager) {
-        const chatId = msg.chat.id;
-        const userId = msg.from.id;
-        const url = msg.text.trim();
-
-        // Validate TikTok URL
-        if (!url.includes('tiktok.com')) {
-            this.bot.sendMessage(chatId, '❌ Please provide a valid TikTok URL');
-            return;
+    async handleWmTikTok(message, args) {
+    try {
+        if (!args[0]) {
+            return message.reply('Please provide a TikTok URL\nUsage: wmtiktok <tiktok_url>\n\n✨ Supports:\n• Single videos\n• Image carousels\n• Multiple media posts');
         }
+
+        const url = args[0];
+        const userId = message.from || message.chat?.id || 'default';
+        const userSettings = this.watermarkSettings.get(userId) || this.defaultWatermark;
+
+        await message.reply('⏳ Downloading TikTok media...');
 
         try {
-            const processingMsg = await this.bot.sendMessage(chatId, '⏳ Downloading TikTok video with watermark...');
-            
-            // Use the plugin's download method with watermark
-            const mockMessage = {
-                from: userId,
-                reply: (content, options) => {
-                    if (Buffer.isBuffer(content)) {
-                        return this.bot.sendVideo(chatId, content, options);
-                    } else {
-                        return this.bot.editMessageText(content, {
-                            chat_id: chatId,
-                            message_id: processingMsg.message_id,
-                            parse_mode: 'Markdown'
-                        });
+            // Download all media files
+            const mediaFiles = await this.downloadTikTokMedia(url, Boolean(this.tiktokCookie));
+
+            await message.reply(`🎨 Processing ${mediaFiles.length} media file(s)...`);
+
+            // Process all files with watermarks
+            const processedFiles = await this.processMediaFiles(mediaFiles, userSettings);
+
+            if (processedFiles.length === 0) {
+                throw new Error('No files were processed successfully');
+            }
+
+            // Split files by type
+            const videos = processedFiles.filter(f => f.type === 'video');
+            const images = processedFiles.filter(f => f.type === 'image');
+
+            // Send videos one by one
+            for (const video of videos) {
+                try {
+                    const videoBuffer = fs.readFileSync(video.path);
+                    await message.reply(videoBuffer, {
+                        mimetype: 'video/mp4',
+                        caption: videos.length > 1
+                            ? `🎬 Video ${video.index + 1}/${videos.length}`
+                            : `✅ Watermarked video`
+                    });
+                } catch (err) {
+                    console.error(`Failed to send video ${video.index}:`, err.message);
+                }
+            }
+
+            // Send images in albums of 10
+            if (images.length > 0) {
+                const chunkSize = 10;
+                const totalChunks = Math.ceil(images.length / chunkSize);
+
+                for (let i = 0; i < totalChunks; i++) {
+                    const chunk = images.slice(i * chunkSize, (i + 1) * chunkSize);
+                    const mediaGroup = chunk.map((img, index) => ({
+                        type: 'photo',
+                        media: img.path,
+                        ...(index === 0 && {
+                            caption: `🖼️ Watermarked TikTok images\n📁 Album ${i + 1} of ${totalChunks}`
+                        })
+                    }));
+
+                    try {
+                        await message.replyWithMediaGroup(mediaGroup);
+                    } catch (err) {
+                        console.error(`Failed to send album ${i + 1}:`, err.message);
                     }
                 }
-            };
+            }
 
-            await this.tikTokPlugin.handleWmTikTok(mockMessage, [url]);
-            
-            // Clear user state
-            botManager.clearUserState(userId);
-            
-        } catch (error) {
-            console.error('Wmtiktok error:', error);
-            this.bot.sendMessage(chatId, `❌ Error: ${error.message}`);
+            // Send summary
+            const summary = `✅ Processed ${processedFiles.length} file(s)\n` +
+                            `🎨 Style: ${userSettings.effect || 'default'}\n` +
+                            `🍪 Cookie status: ${this.getCookieStatus()}`;
+            await message.reply(summary);
+
+            // Cleanup all media files
+            [...mediaFiles, ...processedFiles].forEach(file => {
+                try {
+                    if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+                    if (file.originalPath && fs.existsSync(file.originalPath)) {
+                        fs.unlinkSync(file.originalPath);
+                    }
+                } catch (e) {
+                    console.warn(`⚠️ Failed to delete file ${file.path}: ${e.message}`);
+                }
+            });
+
+        } catch (downloadError) {
+            let errorMessage = '❌ Processing failed: ';
+
+            if (downloadError.message.includes('403')) {
+                errorMessage += 'TikTok blocked the request. Try:\n• Using a different URL\n• Setting a TikTok cookie\n• Waiting before trying again';
+            } else if (downloadError.message.includes('timeout')) {
+                errorMessage += 'Download timed out. Try again later.';
+            } else if (downloadError.message.includes('No media')) {
+                errorMessage += 'Could not find media in TikTok post. The content might be private or deleted.';
+            } else if (downloadError.message.includes('ffmpeg') || downloadError.message.includes('FFmpeg')) {
+                errorMessage += 'FFmpeg is not installed. Please install FFmpeg.';
+            } else if (downloadError.message.includes('sharp') || downloadError.message.includes('Sharp')) {
+                errorMessage += 'Sharp is not installed. Please install: npm install sharp';
+            } else {
+                errorMessage += downloadError.message;
+            }
+
+            await message.reply(errorMessage);
         }
+
+    } catch (error) {
+        console.error('Error in wmtiktok command:', error);
+        await message.reply(`❌ Unexpected error: ${error.message}`);
+    }
     }
 
     // Handle Nrmtiktok download input (clean download)
@@ -639,7 +709,6 @@ async handleNrmTikTokInput(msg, userState, botManager) {
     const url = msg.text.trim();
     const fs = require('fs');
 
-    // Validate TikTok URL
     if (!url.includes('tiktok.com')) {
         this.bot.sendMessage(chatId, '❌ Please provide a valid TikTok URL');
         return;
@@ -657,7 +726,7 @@ async handleNrmTikTokInput(msg, userState, botManager) {
             throw new Error('No media found in this TikTok post');
         }
 
-        // Send clean video if available
+        // Send video if available
         if (videoFile) {
             const videoBuffer = fs.readFileSync(videoFile.path);
             await this.bot.sendVideo(chatId, videoBuffer, {
@@ -666,33 +735,42 @@ async handleNrmTikTokInput(msg, userState, botManager) {
             fs.unlinkSync(videoFile.path);
         }
 
-        // Send image group if available
+        // Send images in media groups (chunked by 10)
         if (imageFiles.length > 0) {
-            const mediaGroup = imageFiles.map((img, index) => ({
-                type: 'photo',
-                media: img.path, // ✅ must be string for sendMediaGroup
-                ...(index === 0 && { caption: `🖼️ Clean TikTok images (${imageFiles.length})` })
-            }));
+            const chunkSize = 10;
+            const totalChunks = Math.ceil(imageFiles.length / chunkSize);
 
-            await this.bot.sendMediaGroup(chatId, mediaGroup);
+            for (let i = 0; i < totalChunks; i++) {
+                const chunk = imageFiles.slice(i * chunkSize, (i + 1) * chunkSize);
+                const mediaGroup = chunk.map((img, index) => ({
+                    type: 'photo',
+                    media: img.path,
+                    ...(index === 0 && {
+                        caption: `🖼️ Clean TikTok images\n📁 Album ${i + 1} of ${totalChunks}`
+                    })
+                }));
 
-            // Clean up image files
-            for (const img of imageFiles) {
-                fs.unlinkSync(img.path);
+                await this.bot.sendMediaGroup(chatId, mediaGroup);
+
+                // Clean up after sending
+                chunk.forEach(img => {
+                    try {
+                        fs.unlinkSync(img.path);
+                    } catch (e) {
+                        console.warn(`⚠️ Failed to delete ${img.path}: ${e.message}`);
+                    }
+                });
             }
         }
 
-        // Delete processing message
         await this.bot.deleteMessage(chatId, processingMsg.message_id);
-
-        // Clear user state
         botManager.clearUserState(userId);
 
     } catch (error) {
         console.error('Nrmtiktok error:', error);
         this.bot.sendMessage(chatId, `❌ Error: ${error.message}`);
     }
-}
+            }
     // Handle custom text input for watermark
     handleCustomTextInput(msg, userState, botManager) {
         const chatId = msg.chat.id;
