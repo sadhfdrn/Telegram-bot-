@@ -1,63 +1,31 @@
-# Use the official Node.js runtime as the base image
-FROM node:22-bullseye
+# Use Alpine Linux for smaller image size (Koyeb recommended)
+FROM node:lts-alpine
 
-# Set the working directory inside the container
+# Set the working directory
 WORKDIR /app
 
-# Update package lists and install FFmpeg, Chrome dependencies, and other required packages
-RUN apt-get update && apt-get install -y \
-    ffmpeg \
-    wget \
-    gnupg \
-    ca-certificates \
-    fonts-liberation \
-    libasound2 \
-    libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libc6 \
-    libcairo2 \
-    libcups2 \
-    libdbus-1-3 \
-    libexpat1 \
-    libfontconfig1 \
-    libgcc1 \
-    libgconf-2-4 \
-    libgdk-pixbuf2.0-0 \
-    libglib2.0-0 \
-    libgtk-3-0 \
-    libnspr4 \
-    libnss3 \
-    libpango-1.0-0 \
-    libpangocairo-1.0-0 \
-    libstdc++6 \
-    libx11-6 \
-    libx11-xcb1 \
-    libxcb1 \
-    libxcomposite1 \
-    libxcursor1 \
-    libxdamage1 \
-    libxext6 \
-    libxfixes3 \
-    libxi6 \
-    libxrandr2 \
-    libxrender1 \
-    libxss1 \
-    libxtst6 \
-    lsb-release \
-    xdg-utils \
-    && rm -rf /var/lib/apt/lists/*
+# Install Chrome/Chromium and required dependencies for Koyeb
+RUN apk update && apk add --no-cache nmap && \
+    echo @edge https://dl-cdn.alpinelinux.org/alpine/edge/community >> /etc/apk/repositories && \
+    echo @edge https://dl-cdn.alpinelinux.org/alpine/edge/main >> /etc/apk/repositories && \
+    apk update && \
+    apk add --no-cache \
+    chromium \
+    harfbuzz \
+    "freetype>2.8" \
+    ttf-freefont \
+    nss \
+    ffmpeg
 
-# Install Google Chrome
-RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list' \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable \
-    && rm -rf /var/lib/apt/lists/*
+# Tell Puppeteer to skip installing Chromium since we have it via Alpine
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
-# Verify FFmpeg installation
-RUN ffmpeg -version
+# Set FFmpeg paths if needed
+ENV FFMPEG_PATH=/usr/bin/ffmpeg
+ENV FFPROBE_PATH=/usr/bin/ffprobe
 
-# Copy package.json and package-lock.json (if available)
+# Copy package files first for better Docker layer caching
 COPY package*.json ./
 
 # Install Node.js dependencies
@@ -66,23 +34,8 @@ RUN npm install
 # Copy the rest of the application code
 COPY . .
 
-# Create a non-root user for running Puppeteer
-RUN groupadd -r pptruser && useradd -r -g pptruser -G audio,video pptruser \
-    && mkdir -p /home/pptruser/Downloads \
-    && chown -R pptruser:pptruser /home/pptruser \
-    && chown -R pptruser:pptruser /app
-
-# Set environment variables
-ENV FFMPEG_PATH=/usr/bin/ffmpeg
-ENV FFPROBE_PATH=/usr/bin/ffprobe
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
-
-# Switch to non-root user
-USER pptruser
-
-# Expose the port your app runs on (adjust as needed)
+# Expose the port
 EXPOSE 3000
 
-# Define the command to run your application
+# Start the application
 CMD ["npm", "start"]
