@@ -15,7 +15,7 @@ class TikTokCommand {
     // Main button for the commands menu
     getMainButton() {
         return {
-            text: '🎬 TikTok Tools',
+            text: '🎶 TikTok Tools',
             callback_data: 'tiktok_main'
         };
     }
