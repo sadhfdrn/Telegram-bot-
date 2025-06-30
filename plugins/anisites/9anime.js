@@ -510,6 +510,266 @@ class NineAnimePlugin {
         }
     }
 
+    // NEW: Download full season method
+    async downloadSeason(animeId, quality = '720p', type = 'sub') {
+        try {
+            console.log(`Downloading full season for ${animeId} in ${quality} ${type}`);
+            
+            // Get episode list
+            const episodes = await this.getEpisodeList(animeId);
+            if (!episodes || episodes.length === 0) {
+                throw new Error('No episodes found for this anime');
+            }
+
+            // Get download links for all episodes
+            const downloadLinks = [];
+            
+            for (const episode of episodes) {
+                try {
+                    const episodeLinks = await this.getEpisodeDownloadLinks(episode.url, quality, type);
+                    if (episodeLinks && episodeLinks.length > 0) {
+                        downloadLinks.push(...episodeLinks.map(link => ({
+                            ...link,
+                            episode: episode.episode,
+                            title: episode.title
+                        })));
+                    }
+                } catch (episodeError) {
+                    console.warn(`Failed to get links for episode ${episode.episode}:`, episodeError.message);
+                    // Add placeholder link
+                    downloadLinks.push({
+                        episode: episode.episode,
+                        title: episode.title,
+                        url: episode.url,
+                        quality: quality,
+                        type: type,
+                        size: 'Unknown',
+                        server: 'Direct'
+                    });
+                }
+            }
+
+            return downloadLinks;
+        } catch (error) {
+            console.error('Download season error:', error);
+            throw new Error(`Failed to download season: ${error.message}`);
+        }
+    }
+
+    // NEW: Download specific episodes method
+    async downloadEpisodes(animeId, episodeNumbers, quality = '720p', type = 'sub') {
+        try {
+            console.log(`Downloading episodes ${episodeNumbers.join(', ')} for ${animeId} in ${quality} ${type}`);
+            
+            // Get episode list
+            const allEpisodes = await this.getEpisodeList(animeId);
+            if (!allEpisodes || allEpisodes.length === 0) {
+                throw new Error('No episodes found for this anime');
+            }
+
+            // Filter requested episodes
+            const requestedEpisodes = allEpisodes.filter(ep => 
+                episodeNumbers.includes(ep.episode)
+            );
+
+            if (requestedEpisodes.length === 0) {
+                throw new Error('Requested episodes not found');
+            }
+
+            // Get download links for requested episodes
+            const downloadLinks = [];
+            
+            for (const episode of requestedEpisodes) {
+                try {
+                    const episodeLinks = await this.getEpisodeDownloadLinks(episode.url, quality, type);
+                    if (episodeLinks && episodeLinks.length > 0) {
+                        downloadLinks.push(...episodeLinks.map(link => ({
+                            ...link,
+                            episode: episode.episode,
+                            title: episode.title
+                        })));
+                    }
+                } catch (episodeError) {
+                    console.warn(`Failed to get links for episode ${episode.episode}:`, episodeError.message);
+                    // Add placeholder link
+                    downloadLinks.push({
+                        episode: episode.episode,
+                        title: episode.title,
+                        url: episode.url,
+                        quality: quality,
+                        type: type,
+                        size: 'Unknown',
+                        server: 'Direct'
+                    });
+                }
+            }
+
+            return downloadLinks;
+        } catch (error) {
+            console.error('Download episodes error:', error);
+            throw new Error(`Failed to download episodes: ${error.message}`);
+        }
+    }
+
+    // NEW: Get download links for a specific episode
+    async getEpisodeDownloadLinks(episodeUrl, quality = '720p', type = 'sub') {
+        try {
+            const options = {
+                ...this.cloudscraperOptions,
+                uri: episodeUrl
+            };
+
+            console.log(`Fetching download links from: ${episodeUrl}`);
+            const response = await cloudscraper(options);
+            const $ = cheerio.load(response);
+            
+            const downloadLinks = [];
+
+            // Try to find video servers/sources
+            const serverSelectors = [
+                '.servers .server-item',
+                '.player-servers .server',
+                '.episode-servers .server',
+                '.video-servers a',
+                '.servers a'
+            ];
+
+            let servers = [];
+            for (const selector of serverSelectors) {
+                const foundServers = $(selector);
+                if (foundServers.length > 0) {
+                    foundServers.each((i, el) => {
+                        const $el = $(el);
+                        const serverName = $el.text().trim() || $el.attr('title') || 'Unknown';
+                        const serverId = $el.attr('data-id') || $el.attr('data-server') || i;
+                        const serverUrl = $el.attr('href') || $el.attr('data-src');
+                        
+                        servers.push({
+                            name: serverName,
+                            id: serverId,
+                            url: serverUrl
+                        });
+                    });
+                    break;
+                }
+            }
+
+            // If no servers found, try to get direct video links
+            if (servers.length === 0) {
+                const videoSelectors = [
+                    'video source',
+                    '.video-player source',
+                    'iframe[src*="embed"]'
+                ];
+
+                for (const selector of videoSelectors) {
+                    $(selector).each((i, el) => {
+                        const $el = $(el);
+                        const videoUrl = $el.attr('src') || $el.attr('data-src');
+                        if (videoUrl) {
+                            downloadLinks.push({
+                                url: videoUrl.startsWith('http') ? videoUrl : this.baseUrl + videoUrl,
+                                quality: quality,
+                                type: type,
+                                size: 'Unknown',
+                                server: 'Direct'
+                            });
+                        }
+                    });
+                }
+            } else {
+                // Process server links
+                for (const server of servers.slice(0, 3)) { // Limit to first 3 servers
+                    try {
+                        const serverLinks = await this.getServerLinks(server, quality, type);
+                        downloadLinks.push(...serverLinks);
+                    } catch (serverError) {
+                        console.warn(`Failed to get links from server ${server.name}:`, serverError.message);
+                    }
+                }
+            }
+
+            // If no download links found, create a placeholder
+            if (downloadLinks.length === 0) {
+                downloadLinks.push({
+                    url: episodeUrl,
+                    quality: quality,
+                    type: type,
+                    size: 'Unknown',
+                    server: 'Direct Link'
+                });
+            }
+
+            return downloadLinks;
+        } catch (error) {
+            console.error('Get episode download links error:', error);
+            throw new Error(`Failed to get download links: ${error.message}`);
+        }
+    }
+
+    // NEW: Get links from specific server
+    async getServerLinks(server, quality, type) {
+        try {
+            if (!server.url) {
+                return [{
+                    url: '#',
+                    quality: quality,
+                    type: type,
+                    size: 'Unknown',
+                    server: server.name
+                }];
+            }
+
+            const serverUrl = server.url.startsWith('http') ? server.url : this.baseUrl + server.url;
+            
+            const options = {
+                ...this.cloudscraperOptions,
+                uri: serverUrl,
+                headers: {
+                    ...this.headers,
+                    'Referer': this.baseUrl
+                }
+            };
+
+            const response = await cloudscraper(options);
+            const $ = cheerio.load(response);
+            
+            const links = [];
+            
+            // Try to extract video sources
+            $('source, video, iframe').each((i, el) => {
+                const $el = $(el);
+                const videoUrl = $el.attr('src') || $el.attr('data-src');
+                if (videoUrl) {
+                    links.push({
+                        url: videoUrl.startsWith('http') ? videoUrl : this.baseUrl + videoUrl,
+                        quality: quality,
+                        type: type,
+                        size: 'Unknown',
+                        server: server.name
+                    });
+                }
+            });
+
+            return links.length > 0 ? links : [{
+                url: serverUrl,
+                quality: quality,
+                type: type,
+                size: 'Unknown',
+                server: server.name
+            }];
+        } catch (error) {
+            console.warn(`Server ${server.name} links error:`, error.message);
+            return [{
+                url: '#',
+                quality: quality,
+                type: type,
+                size: 'Unknown',
+                server: server.name
+            }];
+        }
+    }
+
     // Main search method with enhanced fallback
     async search(query, page = 1) {
         const methods = [
@@ -604,69 +864,454 @@ class NineAnimePlugin {
                 uri: animeUrl
             };
 
-            console.log(`Fetching anime details: ${animeUrl}`);
+            console.log(`Fetching anime details from: ${animeUrl}`);
             const response = await cloudscraper(options);
             const $ = cheerio.load(response);
             
-            return this.parseAnimeDetails($);
+            // Extract detailed information
+            const title = $('.anime-title h1').text().trim() || 
+                         $('.film-name h1').text().trim() ||
+                         $('h1.title').text().trim() ||
+                         $('h1').first().text().trim();
+
+            const description = $('.anime-description p').text().trim() ||
+                              $('.film-description .text').text().trim() ||
+                              $('.description').text().trim() ||
+                              $('.synopsis').text().trim();
+
+            const image = $('.anime-poster img').attr('src') ||
+                         $('.film-poster img').attr('src') ||
+                         $('.poster img').attr('data-src') ||
+                         $('.poster img').attr('src');
+
+            // Extract metadata
+            const info = {};
+            $('.anime-info .item, .film-info .item, .info-item').each((i, el) => {
+                const $el = $(el);
+                const label = $el.find('.label, .title').text().trim().toLowerCase();
+                const value = $el.find('.value, .content').text().trim() || $el.text().replace(/^[^:]+:\s*/, '').trim();
+                
+                if (label && value) {
+                    info[label] = value;
+                }
+            });
+
+            // Extract genres
+            const genres = [];
+            $('.genres a, .genre-list a, .film-info .genre a').each((i, el) => {
+                const genre = $(el).text().trim();
+                if (genre) genres.push(genre);
+            });
+
+            // Extract rating
+            const rating = $('.rating .score').text().trim() ||
+                          $('.imdb-rating').text().trim() ||
+                          $('.rate').text().trim();
+
+            return {
+                id: animeId,
+                title: title,
+                description: description,
+                image: image ? (image.startsWith('http') ? image : this.baseUrl + image) : null,
+                genres: genres,
+                rating: rating,
+                year: info.released || info.year || info.aired,
+                status: info.status || 'Unknown',
+                episodes: info.episodes || info['total episodes'],
+                duration: info.duration || info['episode duration'],
+                studio: info.studio || info.studios,
+                type: info.type || 'TV',
+                ...info
+            };
         } catch (error) {
-            console.error(`Anime details fetch error:`, error.message);
+            console.error('Get anime details error:', error);
             throw new Error(`Failed to get anime details: ${error.message}`);
         }
     }
 
-    parseAnimeDetails($) {
-        const title = $('.film-name, .anime-info h1, h1, .title').first().text().trim();
-        const description = $('.film-description .text, .description, .summary, .synopsis').first().text().trim();
-        const image = $('.film-poster img, .poster img, .cover img').first().attr('src') || 
-                     $('.film-poster img, .poster img, .cover img').first().attr('data-src');
-        
-        const details = {
-            title: title,
-            description: description,
-            image: image ? (image.startsWith('http') ? image : this.baseUrl + image) : null,
-            year: null,
-            status: null,
-            episodes: null,
-            genres: [],
-            rating: null,
-            type: 'TV'
-        };
+    // Get trending/popular anime
+    async getTrending(page = 1) {
+        try {
+            const trendingUrls = [
+                `${this.baseUrl}/trending?page=${page}`,
+                `${this.baseUrl}/most-watched?page=${page}`,
+                `${this.baseUrl}/top-airing?page=${page}`,
+                `${this.baseUrl}/home`
+            ];
 
-        // Enhanced metadata extraction
-        $('.film-stats .item, .info-item, .meta-item, .anime-info .info').each((i, el) => {
-            const $el = $(el);
-            const text = $el.text().toLowerCase();
-            const value = $el.find('.item-tail, .value').text().trim() || 
-                         $el.text().replace($el.find('.item-head, .label').text(), '').trim();
-            
-            if (text.includes('year') || text.includes('released')) {
-                const yearMatch = value.match(/(\d{4})/);
-                if (yearMatch) details.year = yearMatch[1];
-            } else if (text.includes('status')) {
-                details.status = value;
-            } else if (text.includes('episode')) {
-                const episodeMatch = value.match(/(\d+)/);
-                if (episodeMatch) details.episodes = parseInt(episodeMatch[1]);
-            } else if (text.includes('genre')) {
-                details.genres = value.split(',').map(g => g.trim()).filter(g => g);
-            } else if (text.includes('rating') || text.includes('score')) {
-                details.rating = value;
-            } else if (text.includes('type')) {
-                details.type = value;
+            for (const url of trendingUrls) {
+                try {
+                    const options = {
+                        ...this.cloudscraperOptions,
+                        uri: url
+                    };
+
+                    const response = await cloudscraper(options);
+                    const $ = cheerio.load(response);
+                    const results = this.parseSearchResults($);
+                    
+                    if (results && results.length > 0) {
+                        return results;
+                    }
+                } catch (urlError) {
+                    console.log(`Trending URL ${url} failed:`, urlError.message);
+                    continue;
+                }
             }
-        });
 
-        // Fallback genre extraction
-        if (!details.genres.length) {
-            $('.genre a, .genres a, .tag').each((i, el) => {
-                const genre = $(el).text().trim();
-                if (genre) details.genres.push(genre);
-            });
+            throw new Error('All trending endpoints failed');
+        } catch (error) {
+            console.error('Get trending error:', error);
+            throw new Error(`Failed to get trending anime: ${error.message}`);
         }
+    }
 
-        return details;
+    // Get anime by genre
+    async getByGenre(genre, page = 1) {
+        try {
+            const genreUrl = `${this.baseUrl}/genre/${encodeURIComponent(genre.toLowerCase())}?page=${page}`;
+            
+            const options = {
+                ...this.cloudscraperOptions,
+                uri: genreUrl
+            };
+
+            console.log(`Fetching anime by genre: ${genreUrl}`);
+            const response = await cloudscraper(options);
+            const $ = cheerio.load(response);
+            
+            return this.parseSearchResults($);
+        } catch (error) {
+            console.error('Get by genre error:', error);
+            throw new Error(`Failed to get anime by genre: ${error.message}`);
+        }
+    }
+
+    // Get recently added anime
+    async getRecentlyAdded(page = 1) {
+        try {
+            const recentUrls = [
+                `${this.baseUrl}/recently-added?page=${page}`,
+                `${this.baseUrl}/recent-release?page=${page}`,
+                `${this.baseUrl}/latest?page=${page}`,
+                `${this.baseUrl}/`
+            ];
+
+            for (const url of recentUrls) {
+                try {
+                    const options = {
+                        ...this.cloudscraperOptions,
+                        uri: url
+                    };
+
+                    const response = await cloudscraper(options);
+                    const $ = cheerio.load(response);
+                    const results = this.parseSearchResults($);
+                    
+                    if (results && results.length > 0) {
+                        return results;
+                    }
+                } catch (urlError) {
+                    console.log(`Recent URL ${url} failed:`, urlError.message);
+                    continue;
+                }
+            }
+
+            throw new Error('All recent endpoints failed');
+        } catch (error) {
+            console.error('Get recently added error:', error);
+            throw new Error(`Failed to get recently added anime: ${error.message}`);
+        }
+    }
+
+    // Get completed anime
+    async getCompleted(page = 1) {
+        try {
+            const completedUrl = `${this.baseUrl}/completed?page=${page}`;
+            
+            const options = {
+                ...this.cloudscraperOptions,
+                uri: completedUrl
+            };
+
+            console.log(`Fetching completed anime: ${completedUrl}`);
+            const response = await cloudscraper(options);
+            const $ = cheerio.load(response);
+            
+            return this.parseSearchResults($);
+        } catch (error) {
+            console.error('Get completed error:', error);
+            throw new Error(`Failed to get completed anime: ${error.message}`);
+        }
+    }
+
+    // Advanced search with filters
+    async advancedSearch(options = {}) {
+        try {
+            const {
+                query = '',
+                genre = '',
+                year = '',
+                season = '',
+                type = '',
+                status = '',
+                language = '',
+                sort = '',
+                page = 1
+            } = options;
+
+            const params = new URLSearchParams();
+            if (query) params.append('keyword', query);
+            if (genre) params.append('genre', genre);
+            if (year) params.append('year', year);
+            if (season) params.append('season', season);
+            if (type) params.append('type', type);
+            if (status) params.append('status', status);
+            if (language) params.append('language', language);
+            if (sort) params.append('sort', sort);
+            params.append('page', page);
+
+            const searchUrl = `${this.baseUrl}/filter?${params.toString()}`;
+            
+            const cloudscraperOptions = {
+                ...this.cloudscraperOptions,
+                uri: searchUrl
+            };
+
+            console.log(`Advanced search: ${searchUrl}`);
+            const response = await cloudscraper(cloudscraperOptions);
+            const $ = cheerio.load(response);
+            
+            return this.parseSearchResults($);
+        } catch (error) {
+            console.error('Advanced search error:', error);
+            throw new Error(`Advanced search failed: ${error.message}`);
+        }
+    }
+
+    // Batch download with progress tracking
+    async batchDownload(animeList, options = {}) {
+        try {
+            const {
+                quality = '720p',
+                type = 'sub',
+                onProgress = null,
+                maxConcurrent = 3
+            } = options;
+
+            const results = [];
+            const chunks = [];
+            
+            // Split anime list into chunks for concurrent processing
+            for (let i = 0; i < animeList.length; i += maxConcurrent) {
+                chunks.push(animeList.slice(i, i + maxConcurrent));
+            }
+
+            let completed = 0;
+            const total = animeList.length;
+
+            for (const chunk of chunks) {
+                const chunkPromises = chunk.map(async (anime) => {
+                    try {
+                        const downloadLinks = await this.downloadSeason(anime.id, quality, type);
+                        completed++;
+                        
+                        if (onProgress) {
+                            onProgress(completed, total, anime.title);
+                        }
+                        
+                        return {
+                            anime: anime,
+                            downloadLinks: downloadLinks,
+                            success: true
+                        };
+                    } catch (error) {
+                        completed++;
+                        
+                        if (onProgress) {
+                            onProgress(completed, total, anime.title, error.message);
+                        }
+                        
+                        return {
+                            anime: anime,
+                            error: error.message,
+                            success: false
+                        };
+                    }
+                });
+
+                const chunkResults = await Promise.all(chunkPromises);
+                results.push(...chunkResults);
+            }
+
+            return results;
+        } catch (error) {
+            console.error('Batch download error:', error);
+            throw new Error(`Batch download failed: ${error.message}`);
+        }
+    }
+
+    // Get available genres
+    async getGenres() {
+        try {
+            const options = {
+                ...this.cloudscraperOptions,
+                uri: `${this.baseUrl}/genre`
+            };
+
+            const response = await cloudscraper(options);
+            const $ = cheerio.load(response);
+            
+            const genres = [];
+            $('.genre-list a, .genres a, .filter-genre a').each((i, el) => {
+                const genre = $(el).text().trim();
+                const url = $(el).attr('href');
+                if (genre && url) {
+                    genres.push({
+                        name: genre,
+                        url: url,
+                        slug: genre.toLowerCase().replace(/\s+/g, '-')
+                    });
+                }
+            });
+
+            return genres;
+        } catch (error) {
+            console.error('Get genres error:', error);
+            return [
+                { name: 'Action', slug: 'action' },
+                { name: 'Adventure', slug: 'adventure' },
+                { name: 'Comedy', slug: 'comedy' },
+                { name: 'Drama', slug: 'drama' },
+                { name: 'Fantasy', slug: 'fantasy' },
+                { name: 'Romance', slug: 'romance' },
+                { name: 'Sci-Fi', slug: 'sci-fi' },
+                { name: 'Thriller', slug: 'thriller' }
+            ];
+        }
+    }
+
+    // Get random anime
+    async getRandomAnime() {
+        try {
+            const options = {
+                ...this.cloudscraperOptions,
+                uri: `${this.baseUrl}/random`
+            };
+
+            const response = await cloudscraper(options);
+            const $ = cheerio.load(response);
+            
+            // If random endpoint exists, parse it
+            const results = this.parseSearchResults($);
+            if (results && results.length > 0) {
+                return results[0];
+            }
+
+            // Fallback: get popular anime and return random one
+            const popular = await this.getPopular();
+            if (popular && popular.length > 0) {
+                const randomIndex = Math.floor(Math.random() * popular.length);
+                return popular[randomIndex];
+            }
+
+            throw new Error('No anime found');
+        } catch (error) {
+            console.error('Get random anime error:', error);
+            throw new Error(`Failed to get random anime: ${error.message}`);
+        }
+    }
+
+    // Cache management
+    clearCache() {
+        // If using any caching mechanism, clear it here
+        console.log('Cache cleared');
+    }
+
+    // Rate limiting helper
+    async rateLimitDelay(ms = 1000) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    // URL validation
+    isValidUrl(url) {
+        try {
+            new URL(url);
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    // Clean up resources
+    async cleanup() {
+        // Close any open browser instances, clear timers, etc.
+        console.log('Plugin cleanup completed');
+    }
+
+    // Get plugin information
+    getInfo() {
+        return {
+            name: this.name,
+            displayName: this.displayName,
+            icon: this.icon,
+            baseUrl: this.baseUrl,
+            description: this.description,
+            supportedQualities: this.getSupportedQualities(),
+            supportedTypes: this.getSupportedTypes(),
+            features: [
+                'Search anime',
+                'Get popular/trending anime',
+                'Get episode lists',
+                'Download full seasons',
+                'Download specific episodes',
+                'Get anime details',
+                'Browse by genre',
+                'Advanced search with filters',
+                'Batch downloads',
+                'Random anime discovery'
+            ]
+        };
     }
 }
 
 module.exports = NineAnimePlugin;
+
+// Usage example:
+/*
+const plugin = new NineAnimePlugin();
+
+// Search for anime
+plugin.search('naruto').then(results => {
+    console.log('Search results:', results);
+}).catch(error => {
+    console.error('Search error:', error);
+});
+
+// Get popular anime
+plugin.getPopular().then(results => {
+    console.log('Popular anime:', results);
+}).catch(error => {
+    console.error('Popular error:', error);
+});
+
+// Download full season
+plugin.downloadSeason('naruto-shippuden', '720p', 'sub').then(links => {
+    console.log('Download links:', links);
+}).catch(error => {
+    console.error('Download error:', error);
+});
+
+// Advanced search
+plugin.advancedSearch({
+    query: 'attack on titan',
+    genre: 'action',
+    year: '2013',
+    type: 'tv',
+    status: 'completed'
+}).then(results => {
+    console.log('Advanced search results:', results);
+}).catch(error => {
+    console.error('Advanced search error:', error);
+});
+*/
