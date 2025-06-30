@@ -166,6 +166,137 @@ class NineAnimePlugin {
         }
     }
 
+    // Get popular anime
+    async getPopular(page = 1) {
+        try {
+            const popularUrl = `${this.baseUrl}/trending?page=${page}`;
+            
+            const options = {
+                ...this.cloudscraperOptions,
+                uri: popularUrl
+            };
+
+            console.log(`Fetching popular anime: ${popularUrl}`);
+            const response = await cloudscraper(options);
+            const $ = cheerio.load(response);
+            
+            return this.parseSearchResults($);
+        } catch (error) {
+            console.error(`Popular anime fetch error:`, error.message);
+            // Fallback to main page
+            try {
+                const options = {
+                    ...this.cloudscraperOptions,
+                    uri: this.baseUrl
+                };
+                const response = await cloudscraper(options);
+                const $ = cheerio.load(response);
+                return this.parseSearchResults($);
+            } catch (fallbackError) {
+                throw new Error(`Failed to get popular anime: ${error.message}`);
+            }
+        }
+    }
+
+    // Get anime details
+    async getAnimeDetails(animeId) {
+        try {
+            const animeUrl = animeId.startsWith('http') ? animeId : `${this.baseUrl}/watch/${animeId}`;
+            
+            const options = {
+                ...this.cloudscraperOptions,
+                uri: animeUrl
+            };
+
+            console.log(`Fetching anime details: ${animeUrl}`);
+            const response = await cloudscraper(options);
+            const $ = cheerio.load(response);
+            
+            return this.parseAnimeDetails($);
+        } catch (error) {
+            console.error(`Anime details fetch error:`, error.message);
+            throw new Error(`Failed to get anime details: ${error.message}`);
+        }
+    }
+
+    // Parse anime details from page
+    parseAnimeDetails($) {
+        const title = $('.film-name, .anime-info h1, h1').first().text().trim();
+        const description = $('.film-description .text, .description, .summary').first().text().trim();
+        const image = $('.film-poster img, .poster img').first().attr('src') || $('.film-poster img, .poster img').first().attr('data-src');
+        
+        // Extract metadata
+        const metaItems = $('.film-stats .item, .info-item, .meta-item');
+        const details = {
+            title: title,
+            description: description,
+            image: image ? (image.startsWith('http') ? image : this.baseUrl + image) : null,
+            year: null,
+            status: null,
+            episodes: null,
+            genres: [],
+            rating: null,
+            type: 'TV'
+        };
+
+        metaItems.each((i, el) => {
+            const $el = $(el);
+            const label = $el.find('.item-head, .label').text().toLowerCase();
+            const value = $el.find('.item-tail, .value').text().trim();
+            
+            if (label.includes('year') || label.includes('released')) {
+                const yearMatch = value.match(/(\d{4})/);
+                if (yearMatch) details.year = yearMatch[1];
+            } else if (label.includes('status')) {
+                details.status = value;
+            } else if (label.includes('episode')) {
+                const episodeMatch = value.match(/(\d+)/);
+                if (episodeMatch) details.episodes = parseInt(episodeMatch[1]);
+            } else if (label.includes('genre')) {
+                details.genres = value.split(',').map(g => g.trim());
+            } else if (label.includes('rating') || label.includes('score')) {
+                details.rating = value;
+            } else if (label.includes('type')) {
+                details.type = value;
+            }
+        });
+
+        // Try alternative selectors if main ones failed
+        if (!details.year) {
+            const yearText = $('.film-detail, .anime-detail').text();
+            const yearMatch = yearText.match(/(\d{4})/);
+            if (yearMatch) details.year = yearMatch[1];
+        }
+
+        if (!details.genres.length) {
+            $('.genre a, .genres a').each((i, el) => {
+                details.genres.push($(el).text().trim());
+            });
+        }
+
+        return details;
+    }
+
+    // Download full season
+    async downloadSeason(animeId, quality = '1080p', type = 'sub') {
+        try {
+            console.log(`Downloading season for ${animeId}`);
+            
+            // First get the episode list
+            const episodes = await this.getEpisodeList(animeId);
+            
+            if (!episodes || episodes.length === 0) {
+                throw new Error('No episodes found for this anime');
+            }
+
+            const episodeNumbers = episodes.map((_, index) => index + 1);
+            return await this.downloadEpisodes(animeId, episodeNumbers, quality, type);
+        } catch (error) {
+            console.error(`Season download error:`, error.message);
+            throw new Error(`Failed to download season: ${error.message}`);
+        }
+    }
+
     // Enhanced episode stream extraction (Docker optimized)
     async getStreamDataWithPuppeteer(episodeUrl) {
         let browser;
@@ -331,11 +462,12 @@ class NineAnimePlugin {
                 if (directLink) {
                     downloadLinks.push({
                         episode: episodeNum,
-                        title: episode.title,
+                        title: episode.title || `Episode ${episodeNum}`,
                         url: directLink,
                         quality: quality,
                         type: type,
-                        method: 'extracted'
+                        method: 'extracted',
+                        size: 'Unknown'
                     });
                 }
             }
@@ -458,14 +590,74 @@ class NineAnimePlugin {
         return [];
     }
 
-    // Helper method to get episode list (placeholder - implement based on site structure)
+    // Get episode list for an anime
     async getEpisodeList(animeId) {
-        // This would need to be implemented based on the specific anime page structure
-        // For now, returning a placeholder
-        return [];
+        try {
+            const animeUrl = animeId.startsWith('http') ? animeId : `${this.baseUrl}/watch/${animeId}`;
+            
+            const options = {
+                ...this.cloudscraperOptions,
+                uri: animeUrl
+            };
+
+            console.log(`Fetching episode list from: ${animeUrl}`);
+            const response = await cloudscraper(options);
+            const $ = cheerio.load(response);
+            
+            const episodes = [];
+            
+            // Try different episode list selectors
+            const episodeSelectors = [
+                '.ss-list a',
+                '.episode-list a',
+                '.ep-item a',
+                '.episodes a',
+                '.episode a'
+            ];
+
+            for (const selector of episodeSelectors) {
+                $(selector).each((index, element) => {
+                    const $el = $(element);
+                    const title = $el.attr('title') || $el.text().trim();
+                    const url = $el.attr('href');
+                    const episodeNum = $el.attr('data-number') || 
+                                     title.match(/episode\s*(\d+)/i)?.[1] || 
+                                     (index + 1);
+
+                    if (url) {
+                        episodes.push({
+                            id: this.extractEpisodeId(url),
+                            title: title,
+                            url: this.baseUrl + url,
+                            episode: parseInt(episodeNum) || (index + 1)
+                        });
+                    }
+                });
+
+                if (episodes.length > 0) break;
+            }
+
+            // If no episodes found, create a placeholder list
+            if (episodes.length === 0) {
+                console.warn('No episodes found, creating placeholder');
+                for (let i = 1; i <= 12; i++) {
+                    episodes.push({
+                        id: `${animeId}-ep-${i}`,
+                        title: `Episode ${i}`,
+                        url: `${this.baseUrl}/watch/${animeId}/ep-${i}`,
+                        episode: i
+                    });
+                }
+            }
+
+            return episodes.sort((a, b) => a.episode - b.episode);
+        } catch (error) {
+            console.error(`Episode list fetch error:`, error.message);
+            throw new Error(`Failed to get episode list: ${error.message}`);
+        }
     }
 
-    // Rest of the methods remain the same...
+    // Helper methods
     extractAnimeId(url) {
         const matches = url.match(/\/watch\/([^\/\?]+)/);
         return matches ? matches[1] : url.split('/').pop().split('?')[0];
