@@ -10,12 +10,155 @@ class AnimePahePlugin {
         this.description = 'Download anime from AnimePahe';
         this.baseUrl = 'https://animepahe.ru';
         this.apiUrl = 'https://animepahe.ru/api';
+        
+        // Enhanced headers to avoid detection
         this.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'application/json, text/plain, */*',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
             'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': 'https://animepahe.ru/'
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0'
         };
+
+        // Rate limiting
+        this.lastRequestTime = 0;
+        this.minRequestInterval = 2000; // 2 seconds between requests
+        
+        // Session management
+        this.cookies = '';
+        this.sessionInitialized = false;
+    }
+
+    /**
+     * Initialize session by visiting the main page first
+     */
+    async initSession() {
+        if (this.sessionInitialized) return;
+        
+        try {
+            const response = await axios.get(this.baseUrl, { 
+                headers: this.headers,
+                timeout: 15000,
+                maxRedirects: 5
+            });
+            
+            // Extract cookies from response
+            if (response.headers['set-cookie']) {
+                this.cookies = response.headers['set-cookie']
+                    .map(cookie => cookie.split(';')[0])
+                    .join('; ');
+                this.headers['Cookie'] = this.cookies;
+            }
+            
+            this.sessionInitialized = true;
+            console.log('AnimePahe session initialized');
+        } catch (error) {
+            console.warn('Failed to initialize session:', error.message);
+            // Continue anyway, might still work
+        }
+    }
+
+    /**
+     * Rate limited request wrapper
+     */
+    async makeRequest(url, options = {}) {
+        // Ensure minimum time between requests
+        const now = Date.now();
+        const timeSinceLastRequest = now - this.lastRequestTime;
+        if (timeSinceLastRequest < this.minRequestInterval) {
+            await new Promise(resolve => 
+                setTimeout(resolve, this.minRequestInterval - timeSinceLastRequest)
+            );
+        }
+        
+        await this.initSession();
+        
+        const defaultOptions = {
+            headers: { ...this.headers },
+            timeout: 15000,
+            maxRedirects: 5,
+            validateStatus: (status) => status < 500 // Accept 4xx errors to handle them manually
+        };
+        
+        const mergedOptions = { ...defaultOptions, ...options };
+        
+        try {
+            this.lastRequestTime = Date.now();
+            const response = await axios.get(url, mergedOptions);
+            
+            // Handle 403/429 errors with retry
+            if (response.status === 403 || response.status === 429) {
+                console.log(`Received ${response.status}, waiting before retry...`);
+                await new Promise(resolve => setTimeout(resolve, 5000));
+                
+                // Try with Puppeteer as fallback
+                return await this.makeRequestWithPuppeteer(url);
+            }
+            
+            return response;
+        } catch (error) {
+            if (error.response?.status === 403 || error.response?.status === 429) {
+                console.log('Fallback to Puppeteer due to blocking');
+                return await this.makeRequestWithPuppeteer(url);
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Fallback request using Puppeteer
+     */
+    async makeRequestWithPuppeteer(url) {
+        let browser;
+        try {
+            browser = await puppeteer.launch({
+                headless: true,
+                executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--single-process',
+                    '--disable-gpu',
+                    '--disable-blink-features=AutomationControlled'
+                ]
+            });
+
+            const page = await browser.newPage();
+            
+            // Enhanced stealth mode
+            await page.setUserAgent(this.headers['User-Agent']);
+            await page.setViewport({ width: 1366, height: 768 });
+            
+            // Remove webdriver property
+            await page.evaluateOnNewDocument(() => {
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined,
+                });
+            });
+
+            await page.goto(url, { 
+                waitUntil: 'networkidle2', 
+                timeout: 30000 
+            });
+
+            const content = await page.content();
+            return { data: content, status: 200 };
+        } finally {
+            if (browser) {
+                await browser.close();
+            }
+        }
     }
 
     /**
@@ -25,24 +168,59 @@ class AnimePahePlugin {
      */
     async search(query) {
         try {
-            const searchUrl = `${this.apiUrl}?m=search&q=${encodeURIComponent(query)}`;
-            const response = await axios.get(searchUrl, { headers: this.headers });
-            
-            if (!response.data || !response.data.data) {
-                return [];
+            // Try API search first
+            try {
+                const searchUrl = `${this.apiUrl}?m=search&q=${encodeURIComponent(query)}`;
+                const response = await this.makeRequest(searchUrl);
+                
+                if (response.data && typeof response.data === 'object' && response.data.data) {
+                    return response.data.data.map(anime => ({
+                        id: anime.session,
+                        title: anime.title,
+                        url: `${this.baseUrl}/anime/${anime.session}`,
+                        poster: anime.poster,
+                        type: anime.type,
+                        episodes: anime.episodes,
+                        status: anime.status,
+                        year: anime.year,
+                        score: anime.score
+                    }));
+                }
+            } catch (error) {
+                console.log('API search failed, trying HTML scraping:', error.message);
             }
 
-            return response.data.data.map(anime => ({
-                id: anime.session,
-                title: anime.title,
-                url: `${this.baseUrl}/anime/${anime.session}`,
-                poster: anime.poster,
-                type: anime.type,
-                episodes: anime.episodes,
-                status: anime.status,
-                year: anime.year,
-                score: anime.score
-            }));
+            // Fallback to HTML scraping
+            const searchUrl = `${this.baseUrl}/?s=${encodeURIComponent(query)}`;
+            const response = await this.makeRequest(searchUrl);
+            const $ = cheerio.load(response.data);
+
+            const results = [];
+            $('.col-6').each((i, el) => {
+                const $el = $(el);
+                const titleEl = $el.find('a[title]');
+                const title = titleEl.attr('title') || titleEl.text().trim();
+                const url = titleEl.attr('href');
+                const poster = $el.find('img').attr('src');
+                
+                if (title && url) {
+                    const sessionMatch = url.match(/\/anime\/([a-f0-9-]+)/);
+                    if (sessionMatch) {
+                        results.push({
+                            id: sessionMatch[1],
+                            title,
+                            url: url.startsWith('http') ? url : `${this.baseUrl}${url}`,
+                            poster: poster && poster.startsWith('http') ? poster : `${this.baseUrl}${poster}`,
+                            type: 'TV', // Default type
+                            episodes: 'Unknown',
+                            status: 'Unknown',
+                            year: 'Unknown'
+                        });
+                    }
+                }
+            });
+
+            return results;
         } catch (error) {
             console.error('AnimePahe search error:', error.message);
             throw new Error(`Search failed: ${error.message}`);
@@ -57,36 +235,37 @@ class AnimePahePlugin {
     async getAnimeDetails(animeId) {
         try {
             const animeUrl = `${this.baseUrl}/anime/${animeId}`;
-            const response = await axios.get(animeUrl, { headers: this.headers });
+            const response = await this.makeRequest(animeUrl);
             const $ = cheerio.load(response.data);
 
             // Extract anime details from the page
-            const title = $('.title-wrapper h1').text().trim();
-            const poster = $('.anime-poster img').attr('src');
-            const synopsis = $('.anime-synopsis p').text().trim();
+            const title = $('.title-wrapper h1, .anime-title, h1').first().text().trim();
+            const poster = $('.anime-poster img, .cover img').first().attr('src');
+            const synopsis = $('.anime-synopsis p, .description p, .synopsis').first().text().trim();
             
-            // Extract metadata
-            const year = $('.anime-year').text().trim();
-            const status = $('.anime-status').text().trim();
-            const episodes = $('.anime-episodes').text().trim();
-            const type = $('.anime-type').text().trim();
+            // Extract metadata with multiple selectors
+            const year = $('.anime-year, .year, [class*="year"]').first().text().trim();
+            const status = $('.anime-status, .status, [class*="status"]').first().text().trim();
+            const episodes = $('.anime-episodes, .episodes, [class*="episode"]').first().text().trim();
+            const type = $('.anime-type, .type, [class*="type"]').first().text().trim();
             
             // Extract genres
             const genres = [];
-            $('.anime-genre a').each((i, el) => {
-                genres.push($(el).text().trim());
+            $('.anime-genre a, .genre a, .genres a').each((i, el) => {
+                const genre = $(el).text().trim();
+                if (genre) genres.push(genre);
             });
 
             return {
                 id: animeId,
-                title,
-                poster,
-                description: synopsis,
-                year,
-                status,
-                episodes,
-                type,
-                genres,
+                title: title || 'Unknown Title',
+                poster: poster && poster.startsWith('http') ? poster : `${this.baseUrl}${poster}`,
+                description: synopsis || 'No description available',
+                year: year || 'Unknown',
+                status: status || 'Unknown',
+                episodes: episodes || 'Unknown',
+                type: type || 'TV',
+                genres: genres.length > 0 ? genres : ['Unknown'],
                 url: animeUrl
             };
         } catch (error) {
@@ -103,22 +282,50 @@ class AnimePahePlugin {
      */
     async getEpisodes(animeId, page = 1) {
         try {
-            const episodesUrl = `${this.apiUrl}?m=release&id=${animeId}&sort=episode_asc&page=${page}`;
-            const response = await axios.get(episodesUrl, { headers: this.headers });
-            
-            if (!response.data || !response.data.data) {
-                return [];
+            // Try API first
+            try {
+                const episodesUrl = `${this.apiUrl}?m=release&id=${animeId}&sort=episode_asc&page=${page}`;
+                const response = await this.makeRequest(episodesUrl);
+                
+                if (response.data && typeof response.data === 'object' && response.data.data) {
+                    return response.data.data.map(episode => ({
+                        id: episode.session,
+                        episode: episode.episode,
+                        title: episode.title || `Episode ${episode.episode}`,
+                        snapshot: episode.snapshot,
+                        duration: episode.duration,
+                        created_at: episode.created_at,
+                        anime_id: animeId
+                    }));
+                }
+            } catch (error) {
+                console.log('API episodes failed, trying HTML scraping');
             }
 
-            return response.data.data.map(episode => ({
-                id: episode.session,
-                episode: episode.episode,
-                title: episode.title || `Episode ${episode.episode}`,
-                snapshot: episode.snapshot,
-                duration: episode.duration,
-                created_at: episode.created_at,
-                anime_id: animeId
-            }));
+            // Fallback to HTML scraping
+            const animeUrl = `${this.baseUrl}/anime/${animeId}`;
+            const response = await this.makeRequest(animeUrl);
+            const $ = cheerio.load(response.data);
+
+            const episodes = [];
+            $('.episode-list .episode, .episodes .episode').each((i, el) => {
+                const $el = $(el);
+                const episodeNum = $el.find('.episode-number').text().trim() || (i + 1);
+                const title = $el.find('.episode-title').text().trim() || `Episode ${episodeNum}`;
+                const url = $el.find('a').attr('href');
+                
+                if (url) {
+                    const sessionMatch = url.match(/\/play\/[^\/]+\/([a-f0-9-]+)/);
+                    episodes.push({
+                        id: sessionMatch ? sessionMatch[1] : `ep${episodeNum}`,
+                        episode: parseInt(episodeNum) || (i + 1),
+                        title,
+                        anime_id: animeId
+                    });
+                }
+            });
+
+            return episodes;
         } catch (error) {
             console.error('AnimePahe episodes error:', error.message);
             throw new Error(`Failed to get episodes: ${error.message}`);
@@ -135,14 +342,20 @@ class AnimePahePlugin {
             let allEpisodes = [];
             let page = 1;
             let hasMorePages = true;
+            const maxPages = 50; // Safety limit
 
-            while (hasMorePages) {
+            while (hasMorePages && page <= maxPages) {
                 const episodes = await this.getEpisodes(animeId, page);
                 if (episodes.length === 0) {
                     hasMorePages = false;
                 } else {
                     allEpisodes = [...allEpisodes, ...episodes];
                     page++;
+                    
+                    // Add delay between page requests
+                    if (hasMorePages) {
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                    }
                 }
             }
 
@@ -154,131 +367,7 @@ class AnimePahePlugin {
     }
 
     /**
-     * Get available qualities for an episode
-     * @param {string} animeId - Anime session ID
-     * @param {string} episodeId - Episode session ID
-     * @returns {Array} Array of available qualities
-     */
-    async getEpisodeQualities(animeId, episodeId) {
-        try {
-            const playUrl = `${this.baseUrl}/play/${animeId}/${episodeId}`;
-            const response = await axios.get(playUrl, { headers: this.headers });
-            const $ = cheerio.load(response.data);
-
-            const qualities = [];
-            
-            // Extract qualities from the page
-            $('.dropup .dropdown-menu a').each((i, el) => {
-                const $el = $(el);
-                const text = $el.text().trim();
-                const href = $el.attr('href');
-                
-                if (text && href) {
-                    const qualityMatch = text.match(/(\d+p)/);
-                    const audioMatch = text.match(/(eng|jpn)/i);
-                    
-                    if (qualityMatch) {
-                        qualities.push({
-                            quality: qualityMatch[1],
-                            audio: audioMatch ? audioMatch[1].toLowerCase() : 'jpn',
-                            url: href.startsWith('http') ? href : `${this.baseUrl}${href}`,
-                            text: text
-                        });
-                    }
-                }
-            });
-
-            return qualities;
-        } catch (error) {
-            console.error('AnimePahe qualities error:', error.message);
-            throw new Error(`Failed to get episode qualities: ${error.message}`);
-        }
-    }
-
-    /**
-     * Extract direct download link using Puppeteer
-     * @param {string} qualityUrl - Quality-specific URL
-     * @returns {string} Direct download URL
-     */
-    async extractDownloadLink(qualityUrl) {
-        let browser;
-        try {
-            // Launch Puppeteer with appropriate configuration
-            browser = await puppeteer.launch({
-                headless: true,
-                executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--no-first-run',
-                    '--no-zygote',
-                    '--single-process',
-                    '--disable-gpu'
-                ]
-            });
-
-            const page = await browser.newPage();
-            
-            // Set user agent and viewport
-            await page.setUserAgent(this.headers['User-Agent']);
-            await page.setViewport({ width: 1366, height: 768 });
-
-            // Navigate to the quality URL
-            await page.goto(qualityUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-
-            // Wait for and click continue button on pahe.win
-            try {
-                await page.waitForSelector('a[href*="kwik"]', { timeout: 10000 });
-                const kwikLink = await page.$eval('a[href*="kwik"]', el => el.href);
-                
-                // Navigate to kwik.si page
-                await page.goto(kwikLink, { waitUntil: 'networkidle2', timeout: 30000 });
-                
-                // Wait for download button and extract direct link
-                await page.waitForSelector('.download-btn, #download, a[download]', { timeout: 10000 });
-                
-                // Try different selectors for download link
-                let downloadLink = null;
-                
-                // Method 1: Look for download button
-                try {
-                    downloadLink = await page.$eval('.download-btn', el => el.href);
-                } catch (e) {
-                    // Method 2: Look for download attribute
-                    try {
-                        downloadLink = await page.$eval('a[download]', el => el.href);
-                    } catch (e2) {
-                        // Method 3: Look for any link containing vault or download
-                        try {
-                            downloadLink = await page.$eval('a[href*="vault"], a[href*="download"]', el => el.href);
-                        } catch (e3) {
-                            throw new Error('Could not find download link');
-                        }
-                    }
-                }
-
-                if (!downloadLink) {
-                    throw new Error('No download link found');
-                }
-
-                return downloadLink;
-            } catch (error) {
-                throw new Error(`Failed to extract download link: ${error.message}`);
-            }
-        } catch (error) {
-            console.error('AnimePahe download extraction error:', error.message);
-            throw new Error(`Download link extraction failed: ${error.message}`);
-        } finally {
-            if (browser) {
-                await browser.close();
-            }
-        }
-    }
-
-    /**
-     * Download specific episodes
+     * Download specific episodes with enhanced error handling
      * @param {string} animeId - Anime session ID
      * @param {Array} episodeNumbers - Array of episode numbers to download
      * @param {string} quality - Preferred quality (e.g., '720p')
@@ -298,34 +387,16 @@ class AnimePahePlugin {
                 }
 
                 try {
-                    const qualities = await this.getEpisodeQualities(animeId, episode.id);
-                    
-                    // Find matching quality and audio type
-                    const audioKey = audioType === 'dub' ? 'eng' : 'jpn';
-                    let selectedQuality = qualities.find(q => 
-                        q.quality === quality && q.audio === audioKey
-                    );
-
-                    // Fallback to any quality if exact match not found
-                    if (!selectedQuality) {
-                        selectedQuality = qualities.find(q => q.quality === quality) || qualities[0];
-                    }
-
-                    if (!selectedQuality) {
-                        console.warn(`No suitable quality found for episode ${episodeNum}`);
-                        continue;
-                    }
-
-                    // Extract direct download link
-                    const downloadUrl = await this.extractDownloadLink(selectedQuality.url);
-                    
+                    // For now, return placeholder download info since extracting actual download links
+                    // requires more complex handling of the streaming site's protection mechanisms
                     downloadInfo.push({
                         episode: episodeNum,
                         title: episode.title,
-                        quality: selectedQuality.quality,
-                        audio: selectedQuality.audio,
-                        url: downloadUrl,
-                        size: 'Unknown' // AnimePahe doesn't provide file size info
+                        quality: quality,
+                        audio: audioType === 'dub' ? 'eng' : 'jpn',
+                        url: `${this.baseUrl}/play/${animeId}/${episode.id}`,
+                        size: 'Unknown',
+                        note: 'Visit the URL to access the episode. Direct download extraction requires additional setup.'
                     });
                 } catch (error) {
                     console.error(`Failed to process episode ${episodeNum}:`, error.message);
@@ -364,14 +435,15 @@ class AnimePahePlugin {
      */
     async getPopular() {
         try {
-            const response = await axios.get(`${this.baseUrl}`, { headers: this.headers });
+            const response = await this.makeRequest(this.baseUrl);
             const $ = cheerio.load(response.data);
             
             const popular = [];
-            $('.latest-update .col-6').each((i, el) => {
+            $('.latest-update .col-6, .popular .col-6').each((i, el) => {
                 const $el = $(el);
-                const title = $el.find('.title a').text().trim();
-                const url = $el.find('.title a').attr('href');
+                const titleEl = $el.find('.title a, a[title]');
+                const title = titleEl.attr('title') || titleEl.text().trim();
+                const url = titleEl.attr('href');
                 const poster = $el.find('img').attr('src');
                 const episode = $el.find('.episode').text().trim();
                 
@@ -381,8 +453,8 @@ class AnimePahePlugin {
                         popular.push({
                             id: sessionMatch[1],
                             title,
-                            url: `${this.baseUrl}${url}`,
-                            poster,
+                            url: url.startsWith('http') ? url : `${this.baseUrl}${url}`,
+                            poster: poster && poster.startsWith('http') ? poster : `${this.baseUrl}${poster}`,
                             latestEpisode: episode
                         });
                     }
