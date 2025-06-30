@@ -1,41 +1,52 @@
-# Use Alpine Linux for smaller image size (Koyeb recommended)
 FROM node:lts-alpine
 
-# Set the working directory
+# Set working directory
 WORKDIR /app
 
-# Install Chrome/Chromium and required dependencies for Koyeb
-RUN apk update && apk add --no-cache nmap && \
-    echo @edge https://dl-cdn.alpinelinux.org/alpine/edge/community >> /etc/apk/repositories && \
-    echo @edge https://dl-cdn.alpinelinux.org/alpine/edge/main >> /etc/apk/repositories && \
-    apk update && \
-    apk add --no-cache \
-    chromium \
-    harfbuzz \
-    "freetype>2.8" \
-    ttf-freefont \
-    nss \
-    ffmpeg
-
-# Tell Puppeteer to skip installing Chromium since we have it via Alpine
+# Environment variables
+ENV FFMPEG_PATH=/usr/bin/ffmpeg
+ENV FFPROBE_PATH=/usr/bin/ffprobe
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
-# Set FFmpeg paths if needed
-ENV FFMPEG_PATH=/usr/bin/ffmpeg
-ENV FFPROBE_PATH=/usr/bin/ffprobe
+# Install system dependencies
+RUN apk add --no-cache \
+      chromium \
+      nss \
+      freetype \
+      freetype-dev \
+      harfbuzz \
+      ca-certificates \
+      ttf-freefont \
+      ffmpeg \
+      curl \
+      && rm -rf /var/cache/apk/*
 
-# Copy package files first for better Docker layer caching
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nextjs -u 1001
+
+# Copy package files
 COPY package*.json ./
 
-# Install Node.js dependencies
-RUN npm install
+# Install dependencies
+RUN npm ci --only=production && npm cache clean --force
 
-# Copy the rest of the application code
+# Copy app code
 COPY . .
 
-# Expose the port
+# Set ownership
+RUN chown -R nextjs:nodejs /app
+
+# Switch to non-root user
+USER nextjs
+
+# Expose port
 EXPOSE 3000
 
-# Start the application
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:3000/health || exit 1
+
+# Start command
 CMD ["npm", "start"]
