@@ -6,7 +6,7 @@ class AnipahePlugin {
     constructor() {
         this.name = 'anipahe';
         this.displayName = 'Anipahe';
-        this.icon = '🎭';
+        this.icon = '🤖';
         this.description = 'Download anime from Anipahe - High quality anime streaming site';
         this.baseUrl = 'https://animepahe.ru';
         this.apiUrl = 'https://animepahe.ru/api';
@@ -17,45 +17,94 @@ class AnipahePlugin {
     }
 
     async initBrowser() {
-        if (!this.browser) {
-            this.browser = await puppeteer.launch({
-                headless: true,
-                executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium-browser',
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--no-first-run',
-                    '--no-zygote',
-                    '--disable-gpu',
-                    '--disable-web-security',
-                    '--disable-features=VizDisplayCompositor',
-                    '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-                ]
-            });
-            this.page = await this.browser.newPage();
-            await this.page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+        try {
+            if (!this.browser) {
+                console.log('🚀 Launching browser...');
+                this.browser = await puppeteer.launch({
+                    headless: true,
+                    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium-browser',
+                    args: [
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox',
+                        '--disable-dev-shm-usage',
+                        '--disable-accelerated-2d-canvas',
+                        '--no-first-run',
+                        '--no-zygote',
+                        '--disable-gpu',
+                        '--disable-web-security',
+                        '--disable-features=VizDisplayCompositor',
+                        '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                    ]
+                });
+                console.log('✅ Browser launched successfully');
+            }
             
-            // Set extra headers to avoid detection
-            await this.page.setExtraHTTPHeaders({
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
-            });
+            if (!this.page) {
+                console.log('📄 Creating new page...');
+                this.page = await this.browser.newPage();
+                await this.page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+                
+                // Set extra headers to avoid detection
+                await this.page.setExtraHTTPHeaders({
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+                });
+                console.log('✅ Page created and configured');
+            }
+        } catch (error) {
+            console.error('❌ Failed to initialize browser:', error);
+            // Clean up any partial initialization
+            await this.closeBrowser();
+            throw error;
         }
     }
 
     async closeBrowser() {
-        if (this.browser) {
-            await this.browser.close();
+        try {
+            if (this.page) {
+                await this.page.close();
+                this.page = null;
+                console.log('📄 Page closed');
+            }
+            if (this.browser) {
+                await this.browser.close();
+                this.browser = null;
+                console.log('🚀 Browser closed');
+            }
+        } catch (error) {
+            console.error('⚠️ Error closing browser:', error);
+            // Force reset even if closing failed
             this.browser = null;
             this.page = null;
         }
     }
 
+    async ensureBrowserReady() {
+        // Ensure browser and page are ready, reinitialize if needed
+        if (!this.browser || !this.page) {
+            await this.initBrowser();
+        }
+        
+        // Double check that page is still valid
+        try {
+            if (this.page.isClosed()) {
+                console.log('⚠️ Page was closed, creating new one...');
+                this.page = await this.browser.newPage();
+                await this.page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+                await this.page.setExtraHTTPHeaders({
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+                });
+            }
+        } catch (error) {
+            console.log('⚠️ Page check failed, reinitializing...');
+            await this.initBrowser();
+        }
+    }
+
     async search(query) {
         try {
-            await this.initBrowser();
+            await this.ensureBrowserReady();
             
             // Navigate to search page
             const searchUrl = `${this.baseUrl}/?m=search&q=${encodeURIComponent(query)}`;
@@ -124,13 +173,82 @@ class AnipahePlugin {
 
         } catch (error) {
             console.error('Search error:', error);
-            throw new Error(`Failed to search Anipahe: ${error.message}`);
+            
+            // Try to recover by reinitializing browser
+            try {
+                console.log('🔄 Attempting to recover browser...');
+                await this.closeBrowser();
+                await this.initBrowser();
+                
+                // Retry the search once
+                const searchUrl = `${this.baseUrl}/?m=search&q=${encodeURIComponent(query)}`;
+                await this.page.goto(searchUrl, { waitUntil: 'networkidle0', timeout: 30000 });
+                await this.page.waitForSelector('.col-lg-8', { timeout: 15000 });
+                
+                const animeList = await this.page.evaluate(() => {
+                    const results = [];
+                    const animeItems = document.querySelectorAll('.col-lg-8 .row .col-6.col-sm-4.col-md-3.col-lg-4.col-xl-3');
+
+                    animeItems.forEach((item, index) => {
+                        try {
+                            const linkElement = item.querySelector('a');
+                            const imageElement = item.querySelector('img');
+                            const titleElement = item.querySelector('.title');
+                            const infoElements = item.querySelectorAll('.info span');
+
+                            if (linkElement && titleElement) {
+                                const url = linkElement.href;
+                                const id = url.split('/anime/')[1]?.split('?')[0] || url.split('/').pop();
+                                const title = titleElement.textContent.trim();
+                                const image = imageElement ? imageElement.src : '';
+                                
+                                let year = '';
+                                let status = '';
+                                let type = '';
+                                
+                                infoElements.forEach(span => {
+                                    const text = span.textContent.trim();
+                                    if (/^\d{4}$/.test(text)) {
+                                        year = text;
+                                    } else if (text.includes('Completed') || text.includes('Ongoing') || text.includes('Airing')) {
+                                        status = text;
+                                    } else if (text.includes('TV') || text.includes('Movie') || text.includes('OVA')) {
+                                        type = text;
+                                    }
+                                });
+
+                                results.push({
+                                    id: id,
+                                    title: title,
+                                    url: url,
+                                    image: image,
+                                    year: year || 'N/A',
+                                    status: status || 'Unknown',
+                                    type: type || 'TV',
+                                    source: 'anipahe'
+                                });
+                            }
+                        } catch (error) {
+                            console.error('Error extracting anime item:', error);
+                        }
+                    });
+
+                    return results;
+                });
+                
+                console.log(`✅ Recovered! Found ${animeList.length} anime results`);
+                return animeList;
+                
+            } catch (recoveryError) {
+                console.error('❌ Recovery failed:', recoveryError);
+                throw new Error(`Failed to search Anipahe: ${error.message}`);
+            }
         }
     }
 
     async getAnimeDetails(animeId) {
         try {
-            await this.initBrowser();
+            await this.ensureBrowserReady();
             
             const animeUrl = `${this.baseUrl}/anime/${animeId}`;
             console.log(`📋 Getting details for: ${animeId}`);
@@ -186,7 +304,7 @@ class AnipahePlugin {
 
     async getEpisodeList(animeId) {
         try {
-            await this.initBrowser();
+            await this.ensureBrowserReady();
             
             const animeUrl = `${this.baseUrl}/anime/${animeId}`;
             await this.page.goto(animeUrl, { waitUntil: 'networkidle0', timeout: 30000 });
@@ -230,7 +348,7 @@ class AnipahePlugin {
 
     async getDownloadLinks(episodeId, quality = '720p', audioType = 'sub') {
         try {
-            await this.initBrowser();
+            await this.ensureBrowserReady();
             
             const episodeUrl = `${this.baseUrl}/play/${episodeId}`;
             console.log(`🎬 Getting download links for episode: ${episodeId}`);
