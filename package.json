@@ -18,7 +18,7 @@
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@tobyg74/tiktok-api-dl": "^1.2.8",
-    "laser r" : "^0.5.2",
+    "laserr" : "^0.5.2",
     "axios": "^1.10.0",
     "cheerio": "^1.1.0",
     "cloudscraper": "^4.6.0",
