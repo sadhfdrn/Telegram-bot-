@@ -12,11 +12,9 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
 # Install additional system dependencies
 USER root
 RUN apt-get update && apt-get install -y \
-    ffmpeg \
-    curl \
-  && apt-get autoremove -y \
-  && apt-get clean \
-  && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+      ffmpeg \
+      curl \
+      && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user (if not already exists)
 RUN groupadd -g 1001 nodejs || true && \
@@ -26,13 +24,10 @@ RUN groupadd -g 1001 nodejs || true && \
 COPY package*.json ./
 
 # Install dependencies
-RUN npm ci --only=production \
-  && npm cache clean --force \
-  && rm -rf /root/.npm /root/.cache /root/.config
+RUN npm ci --only=production && npm cache clean --force
 
-# Install Puppeteer Chrome (if not already bundled)
-RUN npx puppeteer browsers install chrome \
-  && rm -rf /home/nextjs/.cache/puppeteer/chrome-* || true
+# Install/reinstall Puppeteer browsers to ensure Chrome is available
+RUN npx puppeteer browsers install chrome
 
 # Copy app code
 COPY . .
