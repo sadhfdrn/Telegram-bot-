@@ -151,9 +151,12 @@ class NineAnimePlugin {
             await browser.close();
         }
     }
+
+    async getAnimeDetails(animeId) {
         const browser = await this.getBrowser();
         try {
             const page = await browser.newPage();
+            await this.bypassAntiBot(page);
             
             // Navigate to anime details page
             const animeUrl = `${this.baseUrl}/watch/${animeId}`;
@@ -193,6 +196,7 @@ class NineAnimePlugin {
         const browser = await this.getBrowser();
         try {
             const page = await browser.newPage();
+            await this.bypassAntiBot(page);
             
             const animeUrl = `${this.baseUrl}/watch/${animeId}`;
             await page.goto(animeUrl, { waitUntil: 'networkidle2' });
@@ -224,6 +228,7 @@ class NineAnimePlugin {
         const browser = await this.getBrowser();
         try {
             const page = await browser.newPage();
+            await this.bypassAntiBot(page);
             
             // Navigate to episode page
             const episodeUrl = `${this.baseUrl}/watch/${animeId}?ep=${episodeId}`;
