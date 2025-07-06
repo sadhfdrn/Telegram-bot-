@@ -29,6 +29,7 @@ class NineAnimePlugin {
         try {
             this.browser = await puppeteer.launch({
                 headless: 'new',
+                userDataDir: tmpDir,
                 executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
                 args: [
                     '--no-sandbox',
