@@ -1,6 +1,8 @@
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'puppeteer-'));
 
 class NineAnimePlugin {
     constructor() {
