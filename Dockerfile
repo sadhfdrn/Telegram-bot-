@@ -6,15 +6,26 @@ WORKDIR /app
 # Environment variables
 ENV FFMPEG_PATH=/usr/bin/ffmpeg
 ENV FFPROBE_PATH=/usr/bin/ffprobe
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
 
-# Install additional system dependencies
+# Install additional system dependencies and Chrome
 USER root
 RUN apt-get update && apt-get install -y \
       ffmpeg \
       curl \
+      wget \
+      gnupg \
+      ca-certificates \
       && rm -rf /var/lib/apt/lists/*
+
+# Install Google Chrome manually to ensure it's available
+RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list && \
+    apt-get update && \
+    apt-get install -y google-chrome-stable && \
+    rm -rf /var/lib/apt/lists/*
+
+# Verify Chrome installation
+RUN google-chrome-stable --version
 
 # Create non-root user (if not already exists)
 RUN groupadd -g 1001 nodejs || true && \
@@ -26,15 +37,11 @@ COPY package*.json ./
 # Install dependencies
 RUN npm ci --only=production && npm cache clean --force
 
-# Install/reinstall Puppeteer browsers to ensure Chrome is available
-RUN npx puppeteer browsers install chrome
-
 # Copy app code
 COPY . .
 
 # Set ownership
 RUN chown -R nextjs:nodejs /app
-RUN chown -R nextjs:nodejs /home/nextjs/.cache/puppeteer || true
 
 # Switch to non-root user
 USER nextjs
