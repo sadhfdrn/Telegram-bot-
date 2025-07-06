@@ -9,35 +9,124 @@ class NineAnimePlugin {
         this.baseUrl = 'https://9animetv.to';
         this.browserlessToken = process.env.BROWSERLESS_TOKEN || 'your-browserless-token';
         this.browserlessUrl = `wss://chrome.browserless.io?token=${this.browserlessToken}`;
+        
+        // Validate browserless token
+        if (!this.browserlessToken || this.browserlessToken === 'your-browserless-token') {
+            console.warn('⚠️  9anime plugin: BROWSERLESS_TOKEN not set or invalid');
+        }
     }
 
     async getBrowser() {
-        return await puppeteer.connect({
-            browserWSEndpoint: this.browserlessUrl,
-            defaultViewport: { width: 1920, height: 1080 }
-        });
+        // Fallback to local Chrome if browserless.io fails
+        if (!this.browserlessToken || this.browserlessToken === 'your-browserless-token') {
+            console.log('🔄 9anime: Using local Chrome instead of browserless.io');
+            return await puppeteer.launch({
+                headless: 'new',
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-gpu',
+                    '--disable-web-security',
+                    '--disable-features=VizDisplayCompositor'
+                ]
+            });
+        }
+        
+        try {
+            return await puppeteer.connect({
+                browserWSEndpoint: this.browserlessUrl,
+                defaultViewport: { width: 1920, height: 1080 }
+            });
+        } catch (error) {
+            console.warn('⚠️  9anime: Browserless.io connection failed, falling back to local Chrome');
+            console.warn('Error:', error.message);
+            
+            // Fallback to local Chrome
+            return await puppeteer.launch({
+                headless: 'new',
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-gpu',
+                    '--disable-web-security',
+                    '--disable-features=VizDisplayCompositor'
+                ]
+            });
+        }
     }
 
     async search(query) {
         const browser = await this.getBrowser();
         try {
             const page = await browser.newPage();
+            await this.bypassAntiBot(page);
             
             // Navigate to 9anime
             await page.goto(this.baseUrl, { waitUntil: 'networkidle2' });
             
             // Search for anime
-            await page.waitForSelector('.search-input', { timeout: 10000 });
-            await page.type('.search-input', query);
+            await page.waitForSelector('.search-input, #search-input, input[type="search"]', { timeout: 10000 });
+            
+            // Try multiple search input selectors
+            const searchInput = await page.$('.search-input') || 
+                               await page.$('#search-input') || 
+                               await page.$('input[type="search"]') ||
+                               await page.$('.form-control');
+            
+            if (!searchInput) {
+                throw new Error('Search input not found');
+            }
+            
+            await searchInput.type(query);
             await page.keyboard.press('Enter');
             
             // Wait for search results
-            await page.waitForSelector('.film_list-wrap', { timeout: 15000 });
+            await page.waitForSelector('.flw-item, .film-list-wrap, .anime-list', { timeout: 15000 });
             
             // Extract search results
             const results = await page.evaluate(() => {
-                const items = document.querySelectorAll('.flw-item');
+                const items = document.querySelectorAll('.flw-item, .film-item, .anime-item');
                 return Array.from(items).slice(0, 10).map(item => {
+                    const titleElement = item.querySelector('.film-name a, .title a, a[title]');
+                    const imgElement = item.querySelector('.film-poster img, .poster img, img');
+                    const yearElement = item.querySelector('.fdi-item, .year, .release-year');
+                    const statusElement = item.querySelector('.tick-item, .status, .anime-status');
+                    
+                    return {
+                        title: titleElement?.textContent?.trim() || titleElement?.getAttribute('title') || 'Unknown',
+                        url: titleElement?.href || '',
+                        id: titleElement?.href?.split('/').pop()?.split('-').pop() || titleElement?.href?.split('/').pop() || '',
+                        image: imgElement?.src || imgElement?.getAttribute('data-src') || '',
+                        year: yearElement?.textContent?.trim() || 'N/A',
+                        status: statusElement?.textContent?.trim() || 'Unknown'
+                    };
+                });
+            });
+            
+            return results.filter(result => result.title !== 'Unknown' && result.url);
+        } catch (error) {
+            console.error('9anime search error:', error);
+            throw new Error(`Search failed: ${error.message}`);
+        } finally {
+            await browser.close();
+        }
+    }
+
+    async getPopular() {
+        const browser = await this.getBrowser();
+        try {
+            const page = await browser.newPage();
+            await this.bypassAntiBot(page);
+            
+            // Navigate to 9anime home page
+            await page.goto(this.baseUrl, { waitUntil: 'networkidle2' });
+            
+            // Extract popular anime
+            const popularAnime = await page.evaluate(() => {
+                const items = document.querySelectorAll('.flw-item');
+                return Array.from(items).slice(0, 12).map(item => {
                     const titleElement = item.querySelector('.film-name a');
                     const imgElement = item.querySelector('.film-poster img');
                     const yearElement = item.querySelector('.fdi-item:first-child');
@@ -47,23 +136,21 @@ class NineAnimePlugin {
                         title: titleElement?.textContent?.trim() || 'Unknown',
                         url: titleElement?.href || '',
                         id: titleElement?.href?.split('/').pop()?.split('-').pop() || '',
-                        image: imgElement?.src || '',
+                        image: imgElement?.src || imgElement?.getAttribute('data-src') || '',
                         year: yearElement?.textContent?.trim() || 'N/A',
                         status: statusElement?.textContent?.trim() || 'Unknown'
                     };
                 });
             });
             
-            return results;
+            return popularAnime.filter(anime => anime.title !== 'Unknown' && anime.url);
         } catch (error) {
-            console.error('9anime search error:', error);
-            throw new Error(`Search failed: ${error.message}`);
+            console.error('9anime popular error:', error);
+            throw new Error(`Failed to get popular anime: ${error.message}`);
         } finally {
             await browser.close();
         }
     }
-
-    async getAnimeDetails(animeId) {
         const browser = await this.getBrowser();
         try {
             const page = await browser.newPage();
@@ -321,7 +408,7 @@ class NineAnimePlugin {
     async bypassAntiBot(page) {
         try {
             // Set user agent
-            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
             
             // Add extra headers
             await page.setExtraHTTPHeaders({
@@ -330,20 +417,34 @@ class NineAnimePlugin {
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                 'Connection': 'keep-alive',
                 'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Cache-Control': 'max-age=0'
             });
             
+            // Set viewport
+            await page.setViewport({ width: 1920, height: 1080 });
+            
             // Wait for any potential loading screens
-            await page.waitForTimeout(3000);
+            await page.waitForTimeout(2000);
             
             // Handle potential cloudflare challenge
             const title = await page.title();
-            if (title.includes('Just a moment') || title.includes('Checking your browser')) {
+            if (title.includes('Just a moment') || title.includes('Checking your browser') || title.includes('Please wait')) {
+                console.log('🔄 9anime: Detected anti-bot challenge, waiting...');
                 await page.waitForTimeout(5000);
-                await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
+                
+                // Try to wait for navigation
+                try {
+                    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
+                } catch (navError) {
+                    console.warn('⚠️  9anime: Navigation timeout, continuing anyway');
+                }
             }
             
         } catch (error) {
-            console.warn('Anti-bot bypass warning:', error.message);
+            console.warn('⚠️  9anime: Anti-bot bypass warning:', error.message);
         }
     }
 }
