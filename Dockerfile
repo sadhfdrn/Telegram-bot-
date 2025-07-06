@@ -1,4 +1,4 @@
-FROM node:lts-alpine
+FROM ghcr.io/puppeteer/puppeteer:latest
 
 # Set working directory
 WORKDIR /app
@@ -6,25 +6,17 @@ WORKDIR /app
 # Environment variables
 ENV FFMPEG_PATH=/usr/bin/ffmpeg
 ENV FFPROBE_PATH=/usr/bin/ffprobe
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
-# Install system dependencies
-RUN apk add --no-cache \
-      chromium \
-      nss \
-      freetype \
-      freetype-dev \
-      harfbuzz \
-      ca-certificates \
-      ttf-freefont \
+# Install additional system dependencies
+USER root
+RUN apt-get update && apt-get install -y \
       ffmpeg \
       curl \
-      && rm -rf /var/cache/apk/*
+      && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nextjs -u 1001
+# Create non-root user (if not already exists)
+RUN groupadd -g 1001 nodejs || true && \
+    useradd -u 1001 -g nodejs nextjs || true
 
 # Copy package files
 COPY package*.json ./
