@@ -1,523 +1,351 @@
-const puppeteer = require('puppeteer');
-const cheerio = require('cheerio');
+const puppeteer = require('puppeteer-core');
 
-// Try to import Laserr, fallback gracefully if not available
-let Laserr;
-try {
-    Laserr = require('laserr');
-} catch (error) {
-    console.warn('⚠️ Laserr not found, using fallback scraper only');
-    Laserr = null;
-}
-
-// Your original Anime class (as fallback)
-class FallbackAnime {
-    constructor(browser) {
-        this.browser = browser;
+class NineAnimePlugin {
+    constructor() {
+        this.name = '9anime';
+        this.displayName = '9Anime';
+        this.icon = '🎌';
+        this.description = 'Stream anime from 9anime.tv';
         this.baseUrl = 'https://9animetv.to';
+        this.browserlessToken = process.env.BROWSERLESS_TOKEN || 'your-browserless-token';
+        this.browserlessUrl = `wss://chrome.browserless.io?token=${this.browserlessToken}`;
+    }
+
+    async getBrowser() {
+        return await puppeteer.connect({
+            browserWSEndpoint: this.browserlessUrl,
+            defaultViewport: { width: 1920, height: 1080 }
+        });
     }
 
     async search(query) {
-        const page = await this.browser.newPage();
+        const browser = await this.getBrowser();
         try {
-            const searchUrl = `${this.baseUrl}/search?keyword=${encodeURIComponent(query)}`;
-            await page.goto(searchUrl, { waitUntil: 'networkidle2' });
+            const page = await browser.newPage();
             
-            await page.waitForSelector('.film_list-wrap', { timeout: 10000 });
+            // Navigate to 9anime
+            await page.goto(this.baseUrl, { waitUntil: 'networkidle2' });
             
+            // Search for anime
+            await page.waitForSelector('.search-input', { timeout: 10000 });
+            await page.type('.search-input', query);
+            await page.keyboard.press('Enter');
+            
+            // Wait for search results
+            await page.waitForSelector('.film_list-wrap', { timeout: 15000 });
+            
+            // Extract search results
             const results = await page.evaluate(() => {
-                const animeItems = document.querySelectorAll('.flw-item');
-                return Array.from(animeItems).map(item => {
+                const items = document.querySelectorAll('.flw-item');
+                return Array.from(items).slice(0, 10).map(item => {
                     const titleElement = item.querySelector('.film-name a');
-                    const imageElement = item.querySelector('.film-poster img');
-                    const metaElement = item.querySelector('.fd-infor');
+                    const imgElement = item.querySelector('.film-poster img');
+                    const yearElement = item.querySelector('.fdi-item:first-child');
+                    const statusElement = item.querySelector('.tick-item');
                     
                     return {
-                        title: titleElement ? titleElement.textContent.trim() : '',
-                        url: titleElement ? titleElement.href : '',
-                        image: imageElement ? imageElement.src : '',
-                        year: metaElement ? metaElement.textContent.match(/\d{4}/) ? metaElement.textContent.match(/\d{4}/)[0] : 'N/A' : 'N/A',
-                        type: metaElement ? metaElement.textContent.includes('TV') ? 'TV' : 'Movie' : 'Unknown'
+                        title: titleElement?.textContent?.trim() || 'Unknown',
+                        url: titleElement?.href || '',
+                        id: titleElement?.href?.split('/').pop()?.split('-').pop() || '',
+                        image: imgElement?.src || '',
+                        year: yearElement?.textContent?.trim() || 'N/A',
+                        status: statusElement?.textContent?.trim() || 'Unknown'
                     };
-                }).filter(item => item.title && item.url);
+                });
             });
             
             return results;
+        } catch (error) {
+            console.error('9anime search error:', error);
+            throw new Error(`Search failed: ${error.message}`);
         } finally {
-            await page.close();
+            await browser.close();
         }
     }
 
-    async getEpisodes(animeUrl) {
-        const page = await this.browser.newPage();
+    async getAnimeDetails(animeId) {
+        const browser = await this.getBrowser();
         try {
-            await page.goto(animeUrl, { waitUntil: 'networkidle2' });
-            await page.waitForSelector('.ss-list', { timeout: 10000 });
+            const page = await browser.newPage();
             
+            // Navigate to anime details page
+            const animeUrl = `${this.baseUrl}/watch/${animeId}`;
+            await page.goto(animeUrl, { waitUntil: 'networkidle2' });
+            
+            // Extract anime details
+            const details = await page.evaluate(() => {
+                const titleElement = document.querySelector('.film-name, .heading-name');
+                const descElement = document.querySelector('.film-description, .description');
+                const yearElement = document.querySelector('.item:contains("Released:")');
+                const statusElement = document.querySelector('.item:contains("Status:")');
+                const genresElements = document.querySelectorAll('.item a[href*="/genre/"]');
+                
+                // Get episode count
+                const episodeElements = document.querySelectorAll('.ss-list a');
+                
+                return {
+                    title: titleElement?.textContent?.trim() || 'Unknown',
+                    description: descElement?.textContent?.trim() || 'No description available',
+                    year: yearElement?.textContent?.replace('Released:', '').trim() || 'N/A',
+                    status: statusElement?.textContent?.replace('Status:', '').trim() || 'Unknown',
+                    genres: Array.from(genresElements).map(el => el.textContent.trim()),
+                    episodes: episodeElements.length || 'Unknown'
+                };
+            });
+            
+            return details;
+        } catch (error) {
+            console.error('9anime details error:', error);
+            throw new Error(`Failed to get anime details: ${error.message}`);
+        } finally {
+            await browser.close();
+        }
+    }
+
+    async getEpisodeList(animeId) {
+        const browser = await this.getBrowser();
+        try {
+            const page = await browser.newPage();
+            
+            const animeUrl = `${this.baseUrl}/watch/${animeId}`;
+            await page.goto(animeUrl, { waitUntil: 'networkidle2' });
+            
+            // Extract episode list
             const episodes = await page.evaluate(() => {
                 const episodeElements = document.querySelectorAll('.ss-list a');
-                return Array.from(episodeElements).map((ep, index) => {
+                return Array.from(episodeElements).map((el, index) => {
+                    const epId = el.getAttribute('data-id') || el.href.split('ep=')[1];
                     return {
-                        title: ep.getAttribute('title') || `Episode ${index + 1}`,
-                        url: ep.href,
                         number: index + 1,
-                        id: ep.href
+                        id: epId,
+                        title: el.getAttribute('title') || `Episode ${index + 1}`,
+                        url: el.href
                     };
                 });
             });
             
             return episodes;
+        } catch (error) {
+            console.error('9anime episode list error:', error);
+            throw new Error(`Failed to get episode list: ${error.message}`);
         } finally {
-            await page.close();
+            await browser.close();
         }
     }
 
-    async getVideo(episodeUrl) {
-        const page = await this.browser.newPage();
+    async getStreamingLinks(animeId, episodeId, type = 'sub') {
+        const browser = await this.getBrowser();
         try {
+            const page = await browser.newPage();
+            
+            // Navigate to episode page
+            const episodeUrl = `${this.baseUrl}/watch/${animeId}?ep=${episodeId}`;
             await page.goto(episodeUrl, { waitUntil: 'networkidle2' });
-            await page.waitForSelector('#iframe-embed', { timeout: 15000 });
             
-            const iframeSrc = await page.evaluate(() => {
-                const iframe = document.querySelector('#iframe-embed');
-                return iframe ? iframe.src : null;
-            });
-            
-            if (!iframeSrc) {
-                throw new Error('No video iframe found');
+            // Switch to dub if requested
+            if (type === 'dub') {
+                const dubButton = await page.$('.server-item[data-type="dub"]');
+                if (dubButton) {
+                    await dubButton.click();
+                    await page.waitForTimeout(2000);
+                }
             }
             
-            await page.goto(iframeSrc, { waitUntil: 'networkidle2' });
-            
-            const videoUrl = await page.evaluate(() => {
-                const videoElement = document.querySelector('video source');
-                if (videoElement) {
-                    return videoElement.src;
-                }
-                
-                const scriptTags = document.querySelectorAll('script');
-                for (const script of scriptTags) {
-                    const content = script.textContent;
-                    if (content) {
-                        const m3u8Match = content.match(/https?:\/\/[^"'\s]+\.m3u8[^"'\s]*/);
-                        if (m3u8Match) {
-                            return m3u8Match[0];
-                        }
-                        
-                        const mp4Match = content.match(/https?:\/\/[^"'\s]+\.mp4[^"'\s]*/);
-                        if (mp4Match) {
-                            return mp4Match[0];
-                        }
-                    }
-                }
-                
-                return null;
-            });
-            
-            if (!videoUrl) {
-                throw new Error('Could not extract video URL');
+            // Look for vidstreaming server
+            const vidstreamingServer = await page.$('.server-item[data-type="sub"] .server-name:contains("Vidstreaming")');
+            if (vidstreamingServer) {
+                await vidstreamingServer.click();
+                await page.waitForTimeout(3000);
             }
             
-            return {
-                video: videoUrl,
-                headers: {
-                    'Referer': this.baseUrl,
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                }
-            };
-        } finally {
-            await page.close();
-        }
-    }
-
-    async close() {
-        if (this.browser) {
-            await this.browser.close();
-        }
-    }
-}
-
-// Helper function to create puppeteer instance
-async function createPuppeteerInstance(options = {}) {
-    const defaultOptions = {
-        headless: true,
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--disable-gpu',
-            '--disable-background-timer-throttling',
-            '--disable-backgrounding-occluded-windows',
-            '--disable-renderer-backgrounding'
-        ]
-    };
-    
-    return await puppeteer.launch({ ...defaultOptions, ...options });
-}
-
-// Enhanced plugin class with Laserr integration
-class EnhancedAnimePlugin {
-    constructor() {
-        this.name = "enhanced-anime";
-        this.displayName = "Enhanced Anime Scraper";
-        this.icon = "🚀";
-        this.description = "Multi-source anime scraper with Laserr integration and fallback";
-        this.baseUrl = "https://9animetv.to";
-        
-        // Laserr integration
-        this.laserr = null;
-        this.laserAvailable = false;
-        
-        // Fallback scraper
-        this.browser = null;
-        this.fallbackClient = null;
-        this.isInitialized = false;
-        
-        // Supported anime targets for Laserr (these are examples - actual targets depend on Laserr's implementation)
-        this.animeTargets = [
-            'nyaa',
-            'animetosho',
-            'horriblesubs',
-            'subsplease'
-        ];
-    }
-
-    async init() {
-        try {
-            if (!this.isInitialized) {
-                console.log("🚀 Initializing Enhanced Anime Plugin...");
+            // Extract streaming links
+            const streamingData = await page.evaluate(() => {
+                const servers = [];
+                const serverElements = document.querySelectorAll('.server-item');
                 
-                // Initialize Laserr if available
-                if (Laserr) {
-                    try {
-                        this.laserr = new Laserr();
-                        this.laserAvailable = true;
-                        console.log("✅ Laserr initialized successfully");
-                    } catch (laserError) {
-                        console.warn("⚠️ Laserr initialization failed:", laserError.message);
-                        this.laserAvailable = false;
-                    }
-                }
-                
-                // Initialize fallback scraper
-                console.log("🎌 Initializing fallback Puppeteer scraper...");
-                this.browser = await createPuppeteerInstance();
-                this.fallbackClient = new FallbackAnime(this.browser);
-                
-                this.isInitialized = true;
-                console.log("✅ Enhanced Anime Plugin initialized successfully");
-                console.log(`📊 Status: Laserr=${this.laserAvailable ? 'Available' : 'Not Available'}, Fallback=Available`);
-            }
-        } catch (error) {
-            console.error("❌ Failed to initialize Enhanced Anime Plugin:", error);
-            throw error;
-        }
-    }
-
-    async ensureInitialized() {
-        if (!this.isInitialized) {
-            await this.init();
-        }
-    }
-
-    // Laserr search method
-    async searchWithLaserr(query, limit = 10) {
-        if (!this.laserAvailable) {
-            throw new Error('Laserr not available');
-        }
-
-        try {
-            console.log(`🔍 Searching with Laserr for: ${query}`);
-            
-            // Try searching across multiple anime targets
-            const allResults = [];
-            
-            for (const target of this.animeTargets.slice(0, 3)) { // Limit to 3 targets to avoid overwhelming
-                try {
-                    // Note: Actual Laserr API may differ - this is based on Jackett-like functionality
-                    const results = await this.laserr.search({
-                        query: query,
-                        target: target,
-                        category: 'anime', // or whatever category Laserr uses
-                        limit: Math.ceil(limit / 3)
-                    });
+                serverElements.forEach(server => {
+                    const serverName = server.querySelector('.server-name')?.textContent?.trim();
+                    const serverId = server.getAttribute('data-id');
                     
-                    if (results && results.length > 0) {
-                        const formattedResults = results.map(result => ({
-                            id: result.guid || result.link || result.url,
-                            title: result.title,
-                            url: result.link || result.url,
-                            image: result.image || null,
-                            year: this.extractYear(result.title) || "N/A",
-                            status: "Available",
-                            type: this.detectType(result.title),
-                            episodes: "N/A",
-                            size: result.size || "Unknown",
-                            seeders: result.seeders || 0,
-                            source: target
-                        }));
-                        
-                        allResults.push(...formattedResults);
+                    if (serverName && serverId) {
+                        servers.push({
+                            name: serverName,
+                            id: serverId,
+                            type: server.getAttribute('data-type') || 'sub'
+                        });
                     }
-                } catch (targetError) {
-                    console.warn(`⚠️ Target ${target} failed:`, targetError.message);
-                }
-            }
+                });
+                
+                return servers;
+            });
             
-            return allResults.slice(0, limit);
+            // Get direct video links (this part depends on 9anime's current structure)
+            const videoLinks = await this.extractVideoLinks(page);
+            
+            return {
+                servers: streamingData,
+                videoLinks: videoLinks
+            };
             
         } catch (error) {
-            console.error("❌ Laserr search error:", error);
-            throw error;
+            console.error('9anime streaming links error:', error);
+            throw new Error(`Failed to get streaming links: ${error.message}`);
+        } finally {
+            await browser.close();
         }
     }
 
-    // Fallback search method
-    async searchWithFallback(query, limit = 10) {
+    async extractVideoLinks(page) {
         try {
-            console.log(`🔍 Searching with fallback scraper for: ${query}`);
-            const searchResults = await this.fallbackClient.search(query);
+            // Wait for video player to load
+            await page.waitForSelector('video, iframe', { timeout: 10000 });
             
-            const formattedResults = searchResults.slice(0, limit).map((show, index) => ({
-                id: show.url,
-                title: show.title,
-                url: show.url,
-                image: show.image || null,
-                year: show.year || "N/A",
-                status: "Available",
-                type: show.type || "TV",
-                episodes: "N/A",
-                source: "9anime-fallback"
-            }));
-
-            return formattedResults;
-        } catch (error) {
-            console.error("❌ Fallback search error:", error);
-            throw error;
-        }
-    }
-
-    // Main search method with intelligent fallback
-    async search(query, limit = 10) {
-        try {
-            await this.ensureInitialized();
-            
-            let results = [];
-            
-            // Try Laserr first if available
-            if (this.laserAvailable) {
-                try {
-                    results = await this.searchWithLaserr(query, limit);
-                    if (results.length > 0) {
-                        console.log(`✅ Found ${results.length} results with Laserr`);
-                        return results;
+            // Extract video sources
+            const videoSources = await page.evaluate(() => {
+                const videos = document.querySelectorAll('video source');
+                const iframes = document.querySelectorAll('iframe');
+                const sources = [];
+                
+                // Direct video sources
+                videos.forEach(video => {
+                    if (video.src) {
+                        sources.push({
+                            url: video.src,
+                            quality: video.getAttribute('data-quality') || 'Unknown',
+                            type: 'direct'
+                        });
                     }
-                } catch (laserError) {
-                    console.warn("⚠️ Laserr search failed, falling back to custom scraper");
-                }
-            }
+                });
+                
+                // Iframe sources (need further processing)
+                iframes.forEach(iframe => {
+                    if (iframe.src && iframe.src.includes('embed')) {
+                        sources.push({
+                            url: iframe.src,
+                            quality: 'Unknown',
+                            type: 'embed'
+                        });
+                    }
+                });
+                
+                return sources;
+            });
             
-            // Fallback to custom scraper
-            results = await this.searchWithFallback(query, limit);
-            console.log(`✅ Found ${results.length} results with fallback scraper`);
-            return results;
-
+            return videoSources;
         } catch (error) {
-            console.error("❌ Search failed completely:", error);
-            throw new Error(`Search failed: ${error.message}`);
+            console.error('Video extraction error:', error);
+            return [];
         }
     }
 
-    // Enhanced search that combines both sources
-    async searchCombined(query, limit = 10) {
-        try {
-            await this.ensureInitialized();
-            
-            const results = [];
-            const halfLimit = Math.ceil(limit / 2);
-            
-            // Get results from both sources if possible
-            const promises = [];
-            
-            if (this.laserAvailable) {
-                promises.push(
-                    this.searchWithLaserr(query, halfLimit)
-                        .catch(error => {
-                            console.warn("⚠️ Laserr search failed:", error.message);
-                            return [];
-                        })
-                );
+    async downloadEpisodes(animeId, episodes, quality = 'auto', type = 'sub') {
+        const downloadLinks = [];
+        
+        for (const episodeNum of episodes) {
+            try {
+                const episodeList = await this.getEpisodeList(animeId);
+                const episode = episodeList.find(ep => ep.number === episodeNum);
+                
+                if (!episode) {
+                    console.warn(`Episode ${episodeNum} not found`);
+                    continue;
+                }
+                
+                const streamingData = await this.getStreamingLinks(animeId, episode.id, type);
+                
+                // Find the best quality link
+                const bestLink = this.selectBestQuality(streamingData.videoLinks, quality);
+                
+                if (bestLink) {
+                    downloadLinks.push({
+                        episode: episodeNum,
+                        url: bestLink.url,
+                        quality: bestLink.quality,
+                        type: type,
+                        size: 'Unknown'
+                    });
+                }
+                
+            } catch (error) {
+                console.error(`Failed to get episode ${episodeNum}:`, error);
             }
+        }
+        
+        return downloadLinks;
+    }
+
+    async downloadSeason(animeId, quality = 'auto', type = 'sub') {
+        try {
+            const episodeList = await this.getEpisodeList(animeId);
+            const episodeNumbers = episodeList.map(ep => ep.number);
             
-            promises.push(
-                this.searchWithFallback(query, halfLimit)
-                    .catch(error => {
-                        console.warn("⚠️ Fallback search failed:", error.message);
-                        return [];
-                    })
+            return await this.downloadEpisodes(animeId, episodeNumbers, quality, type);
+        } catch (error) {
+            console.error('Season download error:', error);
+            throw new Error(`Failed to download season: ${error.message}`);
+        }
+    }
+
+    selectBestQuality(videoLinks, requestedQuality) {
+        if (!videoLinks || videoLinks.length === 0) {
+            return null;
+        }
+        
+        // Priority order for quality selection
+        const qualityPriority = {
+            '1080p': 5,
+            '720p': 4,
+            '480p': 3,
+            '360p': 2,
+            'auto': 1
+        };
+        
+        // If specific quality requested, try to find it
+        if (requestedQuality !== 'auto') {
+            const exactMatch = videoLinks.find(link => 
+                link.quality.toLowerCase().includes(requestedQuality.toLowerCase())
             );
-            
-            const allResults = await Promise.all(promises);
-            const combinedResults = allResults.flat();
-            
-            // Remove duplicates based on title similarity
-            const uniqueResults = this.removeDuplicates(combinedResults);
-            
-            console.log(`✅ Combined search found ${uniqueResults.length} unique results`);
-            return uniqueResults.slice(0, limit);
-            
-        } catch (error) {
-            console.error("❌ Combined search error:", error);
-            throw new Error(`Combined search failed: ${error.message}`);
+            if (exactMatch) return exactMatch;
         }
-    }
-
-    // Fallback methods for episodes and video (using original implementation)
-    async getAnimeDetails(animeId) {
-        try {
-            await this.ensureInitialized();
+        
+        // Otherwise, select highest quality available
+        return videoLinks.reduce((best, current) => {
+            const currentPriority = qualityPriority[current.quality] || 0;
+            const bestPriority = qualityPriority[best.quality] || 0;
             
-            // For now, use fallback for detailed info
-            // In the future, you could enhance this with Laserr data
-            const episodes = await this.fallbackClient.getEpisodes(animeId);
-            
-            return {
-                id: animeId,
-                url: animeId,
-                title: "Anime Details",
-                episodes: episodes.length,
-                episodesList: episodes.map((ep, index) => ({
-                    number: index + 1,
-                    title: ep.title || `Episode ${index + 1}`,
-                    url: ep.url,
-                    id: ep.url
-                })),
-                totalEpisodes: episodes.length,
-                year: "N/A",
-                status: episodes.length > 0 ? "Available" : "No Episodes",
-                genres: [],
-                description: `Anime with ${episodes.length} available episodes`
-            };
-
-        } catch (error) {
-            console.error("❌ Anime details error:", error);
-            throw new Error(`Failed to get anime details: ${error.message}`);
-        }
-    }
-
-    async getEpisodes(animeId) {
-        try {
-            await this.ensureInitialized();
-            const episodes = await this.fallbackClient.getEpisodes(animeId);
-            
-            return episodes.map((episode, index) => ({
-                number: index + 1,
-                title: episode.title || `Episode ${index + 1}`,
-                url: episode.url,
-                id: episode.url,
-                thumbnail: null
-            }));
-
-        } catch (error) {
-            console.error("❌ Episodes error:", error);
-            throw new Error(`Failed to get episodes: ${error.message}`);
-        }
-    }
-
-    async getVideoUrl(episodeUrl, quality = "1080p") {
-        try {
-            await this.ensureInitialized();
-            const videoData = await this.fallbackClient.getVideo(episodeUrl);
-            
-            if (!videoData || !videoData.video) {
-                throw new Error("No video URL found");
-            }
-
-            return {
-                url: videoData.video,
-                quality: quality,
-                type: videoData.video.includes('.m3u8') ? 'm3u8' : 'mp4',
-                size: "Unknown",
-                headers: videoData.headers || {}
-            };
-
-        } catch (error) {
-            console.error("❌ Video URL error:", error);
-            throw new Error(`Failed to get video URL: ${error.message}`);
-        }
-    }
-
-    // Utility methods
-    extractYear(title) {
-        const yearMatch = title.match(/\b(19|20)\d{2}\b/);
-        return yearMatch ? yearMatch[0] : null;
-    }
-
-    detectType(title) {
-        const lowerTitle = title.toLowerCase();
-        if (lowerTitle.includes('movie') || lowerTitle.includes('film')) {
-            return 'Movie';
-        }
-        if (lowerTitle.includes('ova') || lowerTitle.includes('special')) {
-            return 'OVA';
-        }
-        return 'TV';
-    }
-
-    removeDuplicates(results) {
-        const seen = new Set();
-        return results.filter(result => {
-            const key = result.title.toLowerCase().replace(/[^a-z0-9]/g, '');
-            if (seen.has(key)) {
-                return false;
-            }
-            seen.add(key);
-            return true;
+            return currentPriority > bestPriority ? current : best;
         });
     }
 
-    async getStatus() {
-        return {
-            initialized: this.isInitialized,
-            laserr: this.laserAvailable,
-            fallback: this.browser !== null,
-            supportedTargets: this.animeTargets
-        };
-    }
-
-    async close() {
+    // Helper method to handle 9anime's anti-bot measures
+    async bypassAntiBot(page) {
         try {
-            if (this.fallbackClient) {
-                await this.fallbackClient.close();
+            // Set user agent
+            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+            
+            // Add extra headers
+            await page.setExtraHTTPHeaders({
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+            });
+            
+            // Wait for any potential loading screens
+            await page.waitForTimeout(3000);
+            
+            // Handle potential cloudflare challenge
+            const title = await page.title();
+            if (title.includes('Just a moment') || title.includes('Checking your browser')) {
+                await page.waitForTimeout(5000);
+                await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
             }
-            if (this.laserr && typeof this.laserr.close === 'function') {
-                await this.laserr.close();
-            }
-            this.isInitialized = false;
-            console.log("🔒 Enhanced Anime Plugin closed successfully");
+            
         } catch (error) {
-            console.error("❌ Error closing Enhanced Anime Plugin:", error);
-        }
-    }
-
-    async testConnection() {
-        try {
-            await this.ensureInitialized();
-            const testResults = await this.search("test", 1);
-            return testResults.length > 0;
-        } catch (error) {
-            console.error("❌ Connection test failed:", error);
-            return false;
+            console.warn('Anti-bot bypass warning:', error.message);
         }
     }
 }
 
-module.exports = {
-    EnhancedAnimePlugin,
-    FallbackAnime,
-    createPuppeteerInstance
-};
+module.exports = NineAnimePlugin;
