@@ -28,7 +28,7 @@ class NineAnimePlugin {
 
         try {
             this.browser = await puppeteer.launch({
-                headless: 'new'
+                headless: 'new', 
                 args: [
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
