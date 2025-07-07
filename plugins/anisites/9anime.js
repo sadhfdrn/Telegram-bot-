@@ -6,205 +6,167 @@ const path = require('path');
 
 class Enhanced9AnimePlugin {
     constructor() {
-        this.name = '9anime';
-        this.displayName = '9Anime TV';
-        this.icon = '🎬';
-        this.description = 'Advanced anime streaming from 9anime.to with multiple server support';
-        this.baseUrl = 'https://9animetv.to';
-        this.searchEndpoint = '/search';
-        this.browserlessUrl = 'https://browserless-rj4p.onrender.com';
-        this.maxRetries = 3;
-        this.retryDelay = 2000;
-        
-        // Cache for storing session data
-        this.sessionCache = new Map();
-        
-        // Enhanced user agent rotation
-        this.userAgentGenerator = new UserAgent({
-            deviceCategory: 'desktop',
-            platform: ['Win32', 'MacIntel', 'Linux x86_64']
-        });
-        
-        // Proxy rotation (if available)
-        this.proxyList = process.env.PROXY_LIST ? process.env.PROXY_LIST.split(',') : [];
-        
-        // Server priorities
-        this.serverPriorities = {
-            'vidstreaming': 1,
-            'mycloud': 2,
-            'mp4upload': 3,
-            'streamtape': 4,
-            'doodstream': 5
-        };
-        
-        // Quality priorities
-        this.qualityPriorities = {
-            '1080p': 1,
-            '720p': 2,
-            '480p': 3,
-            '360p': 4
-        };
+    this.name = '9anime';
+    this.displayName = '9Anime TV';
+    this.icon = '🎬';
+    this.description = 'Advanced anime streaming from 9anime.to with multiple server support';
+    this.baseUrl = 'https://9animetv.to';
+    this.searchEndpoint = '/search';
+    this.browserlessUrl = 'https://browserless-rj4p.onrender.com';
+    this.maxRetries = 3;
+    this.retryDelay = 2000;
+
+    // Cache for storing session data
+    this.sessionCache = new Map();
+
+    // Use a known, stable user agent
+    this.realUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+                         'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+                         'Chrome/124.0.6367.207 Safari/537.36';
+
+    this.proxyList = process.env.PROXY_LIST ? process.env.PROXY_LIST.split(',') : [];
+
+    this.serverPriorities = {
+        'vidstreaming': 1,
+        'mycloud': 2,
+        'mp4upload': 3,
+        'streamtape': 4,
+        'doodstream': 5
+    };
+
+    this.qualityPriorities = {
+        '1080p': 1,
+        '720p': 2,
+        '480p': 3,
+        '360p': 4
+    };
+}
+
+// Enhanced browser creation with stealth mode
+async createStealthBrowser(retryCount = 0) {
+    const userAgent = this.realUserAgent;
+    const proxy = this.getRandomProxy();
+
+    const browserOptions = {
+        browserWSEndpoint: `${this.browserlessUrl}?stealth&blockAds&token=${process.env.BROWSERLESS_TOKEN || ''}`,
+        defaultViewport: null,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--single-process',
+            '--disable-gpu',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding',
+            '--disable-features=TranslateUI',
+            '--disable-ipc-flooding-protection',
+            '--disable-web-security',
+            '--disable-features=VizDisplayCompositor',
+        ]
+    };
+
+    if (proxy) {
+        browserOptions.args.push(`--proxy-server=${proxy}`);
     }
 
-    // Generate session ID for caching
-    generateSessionId() {
-        return crypto.randomBytes(16).toString('hex');
-    }
+    try {
+        const browser = await puppeteer.connect(browserOptions);
+        const page = await browser.newPage();
 
-    // Get random proxy
-    getRandomProxy() {
-        if (this.proxyList.length === 0) return null;
-        return this.proxyList[Math.floor(Math.random() * this.proxyList.length)];
-    }
+        await page.setUserAgent(userAgent);
 
-    // Enhanced browser creation with stealth mode
-    async createStealthBrowser(retryCount = 0) {
-        const userAgent = this.userAgentGenerator.toString();
-        const proxy = this.getRandomProxy();
-        
-        const browserOptions = {
-            browserWSEndpoint: `${this.browserlessUrl}?stealth&blockAds&token=${process.env.BROWSERLESS_TOKEN || ''}`,
-            defaultViewport: null,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--single-process',
-                '--disable-gpu',
-                '--disable-background-timer-throttling',
-                '--disable-backgrounding-occluded-windows',
-                '--disable-renderer-backgrounding',
-                '--disable-features=TranslateUI',
-                '--disable-ipc-flooding-protection',
-                '--disable-web-security',
-                '--disable-features=VizDisplayCompositor',
-            ]
-        };
-        
-        // Add proxy if available
-        if (proxy) {
-            browserOptions.args.push(`--proxy-server=${proxy}`);
-        }
-        
-        try {
-            const browser = await puppeteer.connect(browserOptions);
-            const page = await browser.newPage();
-            
-            // Set user agent
-            await page.setUserAgent(userAgent);
-            
-            // Set random viewport
-            const viewports = [
-                { width: 1920, height: 1080 },
-                { width: 1366, height: 768 },
-                { width: 1536, height: 864 },
-                { width: 1440, height: 900 },
-                { width: 1280, height: 720 }
-            ];
-            const viewport = viewports[Math.floor(Math.random() * viewports.length)];
-            await page.setViewport(viewport);
-            
-            // Enhanced stealth measures
-            await page.evaluateOnNewDocument(() => {
-                // Remove webdriver traces
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined,
-                });
-                
-                // Mock plugins
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => [
-                        { name: 'Chrome PDF Plugin', description: 'Portable Document Format' },
-                        { name: 'Chrome PDF Viewer', description: 'PDF Viewer' },
-                        { name: 'Native Client', description: 'Native Client' }
-                    ]
-                });
-                
-                // Mock languages
-                Object.defineProperty(navigator, 'languages', {
-                    get: () => ['en-US', 'en', 'fr']
-                });
-                
-                // Mock permissions
-                const originalQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = (parameters) => (
-                    parameters.name === 'notifications' ?
-                        Promise.resolve({ state: Notification.permission }) :
-                        originalQuery(parameters)
-                );
-                
-                // Mock screen properties
-                Object.defineProperty(screen, 'colorDepth', {
-                    get: () => 24
-                });
-                
-                // Mock canvas fingerprinting
-                const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
-                HTMLCanvasElement.prototype.toDataURL = function(type) {
-                    if (type === 'image/png') {
-                        return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
-                    }
-                    return originalToDataURL.apply(this, arguments);
-                };
+        const viewport = { width: 1920, height: 1080 };
+        await page.setViewport(viewport);
+
+        await page.evaluateOnNewDocument(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [
+                    { name: 'Chrome PDF Plugin' },
+                    { name: 'Chrome PDF Viewer' },
+                    { name: 'Native Client' }
+                ]
             });
-            
-            // Enhanced request interception
-            await page.setRequestInterception(true);
-            page.on('request', (request) => {
-                const resourceType = request.resourceType();
-                const url = request.url();
-                
-                // Block unnecessary resources
-                if (['stylesheet', 'font', 'image', 'media'].includes(resourceType)) {
-                    request.abort();
-                } else if (url.includes('google-analytics') || url.includes('googletagmanager')) {
-                    request.abort();
-                } else {
-                    // Add realistic headers
-                    const headers = {
-                        ...request.headers(),
-                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                        'Accept-Language': 'en-US,en;q=0.5',
-                        'Accept-Encoding': 'gzip, deflate, br',
-                        'DNT': '1',
-                        'Connection': 'keep-alive',
-                        'Upgrade-Insecure-Requests': '1',
-                        'Sec-Fetch-Dest': 'document',
-                        'Sec-Fetch-Mode': 'navigate',
-                        'Sec-Fetch-Site': 'none',
-                        'Sec-Fetch-User': '?1',
-                        'Cache-Control': 'max-age=0'
-                    };
-                    request.continue({ headers });
+
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['en-US', 'en']
+            });
+
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications'
+                    ? Promise.resolve({ state: Notification.permission })
+                    : originalQuery(parameters)
+            );
+
+            Object.defineProperty(screen, 'colorDepth', {
+                get: () => 24
+            });
+
+            const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+            HTMLCanvasElement.prototype.toDataURL = function(type) {
+                if (type === 'image/png') {
+                    return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
                 }
-            });
-            
-            // Add extra headers
-            await page.setExtraHTTPHeaders({
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1'
-            });
-            
-            return { browser, page };
-            
-        } catch (error) {
-            console.error(`Browser creation failed (attempt ${retryCount + 1}):`, error);
-            
-            if (retryCount < this.maxRetries) {
-                await this.delay(this.retryDelay * (retryCount + 1));
-                return await this.createStealthBrowser(retryCount + 1);
+                return originalToDataURL.apply(this, arguments);
+            };
+        });
+
+        await page.setRequestInterception(true);
+        page.on('request', (request) => {
+            const resourceType = request.resourceType();
+            const url = request.url();
+
+            if (['stylesheet', 'font', 'image', 'media'].includes(resourceType)) {
+                request.abort();
+            } else if (url.includes('google-analytics') || url.includes('googletagmanager')) {
+                request.abort();
+            } else {
+                const headers = {
+                    ...request.headers(),
+                    'User-Agent': userAgent,
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'DNT': '1',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Sec-Fetch-User': '?1',
+                    'Cache-Control': 'max-age=0'
+                };
+                request.continue({ headers });
             }
-            
-            throw error;
+        });
+
+        await page.setExtraHTTPHeaders({
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        });
+
+        return { browser, page };
+
+    } catch (error) {
+        console.error(`Browser creation failed (attempt ${retryCount + 1}):`, error);
+
+        if (retryCount < this.maxRetries) {
+            await this.delay(this.retryDelay * (retryCount + 1));
+            return await this.createStealthBrowser(retryCount + 1);
         }
+
+        throw error;
     }
+}
 
     // Enhanced Cloudflare bypass
     async bypassCloudflare(page) {
