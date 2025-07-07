@@ -1,44 +1,46 @@
 FROM node:20-slim
 
-# Set working directory
 WORKDIR /app
 
-# Puppeteer env (skip Chromium download; external Chrome used)
+# Puppeteer & system env
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV FFMPEG_PATH=/usr/bin/ffmpeg
 ENV FFPROBE_PATH=/usr/bin/ffprobe
+ENV HOME=/home/nextjs
+ENV TMPDIR=/tmp
 
-# Install only essential tools
+# Install essential tools only
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     curl \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
-# Create non-root user for better security
+# Create non-root user with writable home
 RUN groupadd -g 1001 nodejs && \
-    useradd -u 1001 -g nodejs nextjs
+    useradd -m -u 1001 -g nodejs nextjs && \
+    mkdir -p /home/nextjs && \
+    chown -R nextjs:nodejs /home/nextjs
 
-# Ensure /tmp is writable (needed by Puppeteer)
-RUN mkdir -p /tmp && chmod -R 777 /tmp && \
-    chown -R nextjs:nodejs /app
+# Prepare writable tmp
+RUN mkdir -p /tmp && chmod -R 777 /tmp
+
+# Set permissions on app directory
+RUN chown -R nextjs:nodejs /app
 
 # Switch to non-root user
 USER nextjs
 
-# Copy package files and install prod deps only
+# Copy and install production deps
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
-# Copy source code
+# Copy application source
 COPY . .
 
-# Expose your app's port
 EXPOSE 3000
 
-# Optional: healthcheck for platforms like Koyeb
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:3000/health || exit 1
 
-# Start your app
 CMD ["npm", "start"]
