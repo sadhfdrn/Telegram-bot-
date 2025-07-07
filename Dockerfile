@@ -9,7 +9,7 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
 ENV FFMPEG_PATH=/usr/bin/ffmpeg
 ENV FFPROBE_PATH=/usr/bin/ffprobe
 
-# Install dependencies
+# Install dependencies for Puppeteer and Chrome
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     curl \
@@ -33,7 +33,7 @@ RUN apt-get update && apt-get install -y \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Chrome
+# Install Google Chrome
 RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg && \
     echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list && \
     apt-get update && \
@@ -44,23 +44,30 @@ RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearm
 RUN groupadd -g 1001 nodejs || true && \
     useradd -u 1001 -g nodejs nextjs || true
 
-# Copy package files and install
+# Ensure tmp is writable for Chromium crashpad etc.
+RUN mkdir -p /tmp && chmod -R 777 /tmp
+
+# Set file ownership
+RUN chown -R nextjs:nodejs /app
+
+# Set writable HOME and TMPDIR to avoid Puppeteer/Chrome permission issues
+ENV HOME=/tmp
+ENV TMPDIR=/tmp
+
+# Switch to non-root user
+USER nextjs
+
+# Copy package files and install production deps
 COPY package*.json ./
 RUN npm ci --only=production && npm cache clean --force
 
 # Copy app source
 COPY . .
 
-# Set file ownership
-RUN chown -R nextjs:nodejs /app
-
-# Switch to non-root user
-USER nextjs
-
 # Expose app port
 EXPOSE 3000
 
-# Healthcheck (optional but good on Koyeb)
+# Healthcheck (optional)
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:3000/health || exit 1
 
