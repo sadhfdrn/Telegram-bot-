@@ -43,6 +43,14 @@ class Enhanced9AnimePlugin {
 }
 
 // Enhanced browser creation with stealth mode
+
+    // Get a random proxy from the list
+    getRandomProxy() {
+        if (!this.proxyList || this.proxyList.length === 0) return null;
+        const index = Math.floor(Math.random() * this.proxyList.length);
+        return this.proxyList[index];
+    }
+
 async createStealthBrowser(retryCount = 0) {
     const userAgent = this.realUserAgent;
     const proxy = this.getRandomProxy();
