@@ -1,13 +1,14 @@
-const https = require('https');
 const axios = require('axios');
+const path = require('path');
+const fs = require('fs');
 
 class AnimeCommand {
-    constructor(bot, manager) {
+    constructor(bot, botManager) {
         this.bot = bot;
-        this.manager = manager;
-        this.name = 'anime';
-        this.baseUrl = 'https://coloured-georgette-ogcheel-8222b3ae.koyeb.app';
-        this.userAnimeData = new Map(); // Store user search results and selections
+        this.botManager = botManager;
+        this.apiBaseUrl = 'https://coloured-georgette-ogcheel-8222b3ae.koyeb.app';
+        this.userSearchResults = new Map(); // Store search results for each user
+        this.userAnimeInfo = new Map(); // Store anime info for each user
     }
 
     init() {
@@ -17,267 +18,86 @@ class AnimeCommand {
     getMainButton() {
         return {
             text: '🎌 Anime Search & Download',
-            callback_data: 'anime_start'
+            callback_data: 'anime_menu'
         };
     }
 
-    showCommandMenu(chatId, messageId) {
-        const message = `🎌 *Anime Search & Download*
-
-Search for your favorite anime and download episodes directly to Telegram!
-
-🔍 Just type the anime name to start searching
-📺 Browse through results with navigation buttons
-⬇️ Download individual episodes or ranges
-
-Type any anime name to begin your search:`;
-
-        const keyboard = {
-            inline_keyboard: [
-                [{ text: '🏠 Back to Main Menu', callback_data: 'show_commands' }]
-            ]
-        };
-
-        this.bot.editMessageText(message, {
-            chat_id: chatId,
-            message_id: messageId,
-            parse_mode: 'Markdown',
-            reply_markup: keyboard
-        });
-
-        // Set user state to expect anime search
-        this.manager.setUserState(chatId, {
-            commandName: 'anime',
-            step: 'awaiting_search'
-        });
-    }
-
-    async handleCallback(callbackQuery) {
+    handleCallback(callbackQuery, botManager) {
+        const data = callbackQuery.data;
         const chatId = callbackQuery.message.chat.id;
         const messageId = callbackQuery.message.message_id;
-        const data = callbackQuery.data;
         const userId = callbackQuery.from.id;
 
-        if (data === 'anime_start') {
-            this.showCommandMenu(chatId, messageId);
+        if (data === 'anime_menu') {
+            this.showAnimeMenu(chatId, messageId);
             return true;
         }
 
-        if (data.startsWith('anime_')) {
-            const [, action, ...params] = data.split('_');
-            
-            switch (action) {
-                case 'next':
-                    await this.handleNavigation(chatId, messageId, userId, 'next');
-                    break;
-                case 'prev':
-                    await this.handleNavigation(chatId, messageId, userId, 'prev');
-                    break;
-                case 'select':
-                    await this.selectAnime(chatId, messageId, userId);
-                    break;
-                case 'episodes':
-                    await this.showEpisodeOptions(chatId, messageId, userId);
-                    break;
-                case 'sub':
-                    await this.handleSubDubSelection(chatId, messageId, userId, 'sub');
-                    break;
-                case 'dub':
-                    await this.handleSubDubSelection(chatId, messageId, userId, 'dub');
-                    break;
-                case 'cancel':
-                    this.showCommandMenu(chatId, messageId);
-                    break;
-            }
+        if (data === 'anime_search') {
+            this.initiateSearch(chatId, messageId, userId);
+            return true;
+        }
+
+        if (data.startsWith('anime_nav_')) {
+            const [, , action, currentIndex] = data.split('_');
+            this.handleNavigation(chatId, messageId, userId, action, parseInt(currentIndex));
+            return true;
+        }
+
+        if (data.startsWith('anime_select_')) {
+            const [, , currentIndex] = data.split('_');
+            this.selectAnime(chatId, messageId, userId, parseInt(currentIndex));
+            return true;
+        }
+
+        if (data.startsWith('anime_episodes_')) {
+            const [, , type] = data.split('_'); // 'sub' or 'dub'
+            this.showEpisodeOptions(chatId, messageId, userId, type);
+            return true;
+        }
+
+        if (data === 'anime_back_to_search') {
+            this.showSearchResults(chatId, messageId, userId, 0);
             return true;
         }
 
         return false;
     }
 
-    async handleTextInput(msg, userState, manager) {
+    handleTextInput(msg, userState, botManager) {
         const chatId = msg.chat.id;
         const userId = msg.from.id;
         const text = msg.text.trim();
 
-        if (userState.step === 'awaiting_search') {
-            await this.searchAnime(chatId, text, userId);
-        } else if (userState.step === 'awaiting_episode_range') {
-            await this.handleEpisodeRangeInput(chatId, userId, text);
-        }
-
-        manager.clearUserState(userId);
-    }
-
-    async searchAnime(chatId, query, userId) {
-        const loadingMsg = await this.bot.sendMessage(chatId, '🔍 Searching for anime...', {
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: '❌ Cancel', callback_data: 'anime_cancel' }
-                ]]
-            }
-        });
-
-        try {
-            const response = await this.makeRequest(`/anime/search/${encodeURIComponent(query)}`);
-            
-            if (!response.results || response.results.length === 0) {
-                await this.bot.editMessageText('❌ No anime found for your search. Please try a different name.', {
-                    chat_id: chatId,
-                    message_id: loadingMsg.message_id,
-                    reply_markup: {
-                        inline_keyboard: [[
-                            { text: '🔍 Search Again', callback_data: 'anime_start' },
-                            { text: '🏠 Main Menu', callback_data: 'show_commands' }
-                        ]]
-                    }
-                });
-                return;
-            }
-
-            // Store search results for user
-            this.userAnimeData.set(userId, {
-                searchResults: response.results,
-                currentIndex: 0,
-                query: query
-            });
-
-            await this.bot.deleteMessage(chatId, loadingMsg.message_id);
-            await this.displayAnimeCarousel(chatId, userId);
-
-        } catch (error) {
-            console.error('❌ Anime search error:', error.message);
-            await this.bot.editMessageText('❌ Failed to search anime. Please try again later.', {
-                chat_id: chatId,
-                message_id: loadingMsg.message_id,
-                reply_markup: {
-                    inline_keyboard: [[
-                        { text: '🔍 Try Again', callback_data: 'anime_start' },
-                        { text: '🏠 Main Menu', callback_data: 'show_commands' }
-                    ]]
-                }
-            });
+        if (userState.action === 'searching') {
+            this.performSearch(chatId, userId, text);
+        } else if (userState.action === 'episode_input') {
+            this.handleEpisodeInput(chatId, userId, text, userState.episodeType);
         }
     }
 
-    async displayAnimeCarousel(chatId, userId) {
-        const userData = this.userAnimeData.get(userId);
-        if (!userData || !userData.searchResults) return;
+    showAnimeMenu(chatId, messageId) {
+        const menuMessage = `🎌 *Anime Search & Download*
 
-        const anime = userData.searchResults[userData.currentIndex];
-        const currentIndex = userData.currentIndex;
-        const totalResults = userData.searchResults.length;
+Search for your favorite anime and download episodes!
 
-        // Prepare description (limit for Telegram caption)
-        let description = anime.description || 'No description available.';
-        if (description.length > 800) {
-            description = description.substring(0, 800) + '...';
-        }
+Features:
+• 🔍 Search anime by title
+• 📺 Browse anime details
+• 📱 Interactive carousel interface
+• 💾 Download episodes (Sub/Dub)
+• 🎭 High-quality sources
 
-        const caption = `🎌 *${anime.title}*
-${anime.japaneseTitle ? `🇯🇵 ${anime.japaneseTitle}` : ''}
-
-📝 ${description}
-
-📊 *Details:*
-${anime.type ? `• Type: ${anime.type}` : ''}
-${anime.status ? `• Status: ${anime.status}` : ''}
-${anime.season ? `• Season: ${anime.season}` : ''}
-${anime.totalEpisodes ? `• Episodes: ${anime.totalEpisodes}` : ''}
-${anime.sub ? `• Sub: ${anime.sub} episodes` : ''}
-${anime.dub ? `• Dub: ${anime.dub} episodes` : ''}
-${anime.genres ? `• Genres: ${anime.genres.join(', ')}` : ''}
-
-📍 Result ${currentIndex + 1} of ${totalResults}`;
-
-        // Create navigation buttons
-        const keyboard = {
-            inline_keyboard: []
-        };
-
-        // Navigation row
-        const navRow = [];
-        if (currentIndex > 0) {
-            navRow.push({ text: '⬅️ Previous', callback_data: 'anime_prev' });
-        }
-        if (currentIndex < totalResults - 1) {
-            navRow.push({ text: 'Next ➡️', callback_data: 'anime_next' });
-        }
-        if (navRow.length > 0) {
-            keyboard.inline_keyboard.push(navRow);
-        }
-
-        // Action buttons
-        keyboard.inline_keyboard.push([
-            { text: '✅ Select This Anime', callback_data: 'anime_select' }
-        ]);
-
-        keyboard.inline_keyboard.push([
-            { text: '🔍 New Search', callback_data: 'anime_start' },
-            { text: '❌ Cancel', callback_data: 'anime_cancel' }
-        ]);
-
-        try {
-            if (anime.image) {
-                await this.bot.sendPhoto(chatId, anime.image, {
-                    caption: caption,
-                    parse_mode: 'Markdown',
-                    reply_markup: keyboard
-                });
-            } else {
-                await this.bot.sendMessage(chatId, caption, {
-                    parse_mode: 'Markdown',
-                    reply_markup: keyboard
-                });
-            }
-        } catch (error) {
-            console.error('❌ Error displaying anime carousel:', error.message);
-            await this.bot.sendMessage(chatId, caption, {
-                parse_mode: 'Markdown',
-                reply_markup: keyboard
-            });
-        }
-    }
-
-    async handleNavigation(chatId, messageId, userId, direction) {
-        const userData = this.userAnimeData.get(userId);
-        if (!userData || !userData.searchResults) return;
-
-        if (direction === 'next' && userData.currentIndex < userData.searchResults.length - 1) {
-            userData.currentIndex++;
-        } else if (direction === 'prev' && userData.currentIndex > 0) {
-            userData.currentIndex--;
-        }
-
-        // Delete the current message and show new one
-        await this.bot.deleteMessage(chatId, messageId);
-        await this.displayAnimeCarousel(chatId, userId);
-    }
-
-    async selectAnime(chatId, messageId, userId) {
-        const userData = this.userAnimeData.get(userId);
-        if (!userData || !userData.searchResults) return;
-
-        const selectedAnime = userData.searchResults[userData.currentIndex];
-        
-        // Store selected anime
-        userData.selectedAnime = selectedAnime;
-
-        const message = `✅ *Selected: ${selectedAnime.title}*
-
-📺 Choose what you want to do:`;
+Click the button below to start searching!`;
 
         const keyboard = {
             inline_keyboard: [
-                [{ text: '📺 View Episodes', callback_data: 'anime_episodes' }],
-                [
-                    { text: '⬅️ Back to Results', callback_data: 'anime_cancel' },
-                    { text: '🏠 Main Menu', callback_data: 'show_commands' }
-                ]
+                [{ text: '🔍 Search Anime', callback_data: 'anime_search' }],
+                [{ text: '🏠 Back to Main Menu', callback_data: 'show_commands' }]
             ]
         };
 
-        await this.bot.editMessageText(message, {
+        this.bot.editMessageText(menuMessage, {
             chat_id: chatId,
             message_id: messageId,
             parse_mode: 'Markdown',
@@ -285,337 +105,507 @@ ${anime.genres ? `• Genres: ${anime.genres.join(', ')}` : ''}
         });
     }
 
-    async showEpisodeOptions(chatId, messageId, userId) {
-        const userData = this.userAnimeData.get(userId);
-        if (!userData || !userData.selectedAnime) return;
+    initiateSearch(chatId, messageId, userId) {
+        const searchMessage = `🔍 *Anime Search*
 
-        const loadingMsg = await this.bot.editMessageText('📺 Loading episode information...', {
+Please enter the name of the anime you want to search for:
+
+Example: "Dandadan", "Naruto", "One Piece"`;
+
+        this.botManager.setUserState(userId, {
+            action: 'searching',
+            commandName: 'anime'
+        });
+
+        this.bot.editMessageText(searchMessage, {
+            chat_id: chatId,
+            message_id: messageId,
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '❌ Cancel', callback_data: 'anime_menu' }]
+                ]
+            }
+        });
+    }
+
+    async performSearch(chatId, userId, query) {
+        const loadingMessage = await this.bot.sendMessage(chatId, '🔍 Searching for anime... Please wait!');
+
+        try {
+            const response = await axios.get(`${this.apiBaseUrl}/anime/search/${encodeURIComponent(query)}`, {
+                timeout: 10000
+            });
+
+            if (response.data && response.data.results && response.data.results.length > 0) {
+                this.userSearchResults.set(userId, response.data.results);
+                this.showSearchResults(chatId, loadingMessage.message_id, userId, 0);
+            } else {
+                this.bot.editMessageText(`❌ No anime found for "${query}". Please try a different search term.`, {
+                    chat_id: chatId,
+                    message_id: loadingMessage.message_id,
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: '🔍 Search Again', callback_data: 'anime_search' }],
+                            [{ text: '🏠 Back to Menu', callback_data: 'anime_menu' }]
+                        ]
+                    }
+                });
+            }
+        } catch (error) {
+            console.error('Error searching anime:', error);
+            this.bot.editMessageText('❌ Error occurred while searching. Please try again later.', {
+                chat_id: chatId,
+                message_id: loadingMessage.message_id,
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: '🔍 Try Again', callback_data: 'anime_search' }],
+                        [{ text: '🏠 Back to Menu', callback_data: 'anime_menu' }]
+                    ]
+                }
+            });
+        }
+
+        this.botManager.clearUserState(userId);
+    }
+
+    showSearchResults(chatId, messageId, userId, currentIndex) {
+        const results = this.userSearchResults.get(userId);
+        if (!results || results.length === 0) {
+            this.showAnimeMenu(chatId, messageId);
+            return;
+        }
+
+        const anime = results[currentIndex];
+        const totalResults = results.length;
+        
+        // Truncate description for telegram caption limit
+        const truncateText = (text, maxLength = 800) => {
+            if (text.length <= maxLength) return text;
+            return text.substring(0, maxLength - 3) + '...';
+        };
+
+        const caption = `🎌 *${anime.title}*
+${anime.japaneseTitle ? `🇯🇵 ${anime.japaneseTitle}` : ''}
+
+📊 *Episodes:* ${anime.episodes || 'N/A'}
+${anime.sub ? `📺 Sub: ${anime.sub} episodes` : ''}
+${anime.dub ? `🎙️ Dub: ${anime.dub} episodes` : ''}
+
+📑 *Result ${currentIndex + 1} of ${totalResults}*`;
+
+        const keyboard = {
+            inline_keyboard: []
+        };
+
+        // Navigation buttons
+        const navButtons = [];
+        if (currentIndex > 0) {
+            navButtons.push({ text: '⬅️ Previous', callback_data: `anime_nav_prev_${currentIndex}` });
+        }
+        if (currentIndex < totalResults - 1) {
+            navButtons.push({ text: '➡️ Next', callback_data: `anime_nav_next_${currentIndex}` });
+        }
+        if (navButtons.length > 0) {
+            keyboard.inline_keyboard.push(navButtons);
+        }
+
+        // Action buttons
+        keyboard.inline_keyboard.push([
+            { text: '✅ Select This Anime', callback_data: `anime_select_${currentIndex}` }
+        ]);
+
+        keyboard.inline_keyboard.push([
+            { text: '🔍 New Search', callback_data: 'anime_search' },
+            { text: '🏠 Back to Menu', callback_data: 'anime_menu' }
+        ]);
+
+        if (anime.image) {
+            this.bot.editMessageMedia({
+                type: 'photo',
+                media: anime.image,
+                caption: caption,
+                parse_mode: 'Markdown'
+            }, {
+                chat_id: chatId,
+                message_id: messageId,
+                reply_markup: keyboard
+            }).catch(error => {
+                // If image fails, send as text
+                this.bot.editMessageText(caption, {
+                    chat_id: chatId,
+                    message_id: messageId,
+                    parse_mode: 'Markdown',
+                    reply_markup: keyboard
+                });
+            });
+        } else {
+            this.bot.editMessageText(caption, {
+                chat_id: chatId,
+                message_id: messageId,
+                parse_mode: 'Markdown',
+                reply_markup: keyboard
+            });
+        }
+    }
+
+    handleNavigation(chatId, messageId, userId, action, currentIndex) {
+        const results = this.userSearchResults.get(userId);
+        if (!results) return;
+
+        let newIndex = currentIndex;
+        if (action === 'next' && currentIndex < results.length - 1) {
+            newIndex = currentIndex + 1;
+        } else if (action === 'prev' && currentIndex > 0) {
+            newIndex = currentIndex - 1;
+        }
+
+        this.showSearchResults(chatId, messageId, userId, newIndex);
+    }
+
+    async selectAnime(chatId, messageId, userId, currentIndex) {
+        const results = this.userSearchResults.get(userId);
+        if (!results || !results[currentIndex]) return;
+
+        const selectedAnime = results[currentIndex];
+        const loadingMessage = await this.bot.editMessageText('📱 Loading anime details... Please wait!', {
             chat_id: chatId,
             message_id: messageId
         });
 
         try {
-            const animeInfo = await this.makeRequest(`/anime/info/${userData.selectedAnime.id}`);
-            
-            userData.animeInfo = animeInfo;
-
-            const message = `📺 *${animeInfo.title}*
-
-📊 *Available Episodes:* ${animeInfo.totalEpisodes || animeInfo.episodes.length}
-
-🎧 *Available Formats:*
-${animeInfo.hasSub ? '• ✅ Subtitled (SUB)' : '• ❌ Subtitled (SUB)'}
-${animeInfo.hasDub ? '• ✅ Dubbed (DUB)' : '• ❌ Dubbed (DUB)'}
-
-Choose your preferred format:`;
-
-            const keyboard = {
-                inline_keyboard: []
-            };
-
-            const formatRow = [];
-            if (animeInfo.hasSub) {
-                formatRow.push({ text: '🎧 SUB', callback_data: 'anime_sub' });
-            }
-            if (animeInfo.hasDub) {
-                formatRow.push({ text: '🎤 DUB', callback_data: 'anime_dub' });
-            }
-            
-            if (formatRow.length > 0) {
-                keyboard.inline_keyboard.push(formatRow);
-            }
-
-            keyboard.inline_keyboard.push([
-                { text: '⬅️ Back', callback_data: 'anime_select' },
-                { text: '❌ Cancel', callback_data: 'anime_cancel' }
-            ]);
-
-            await this.bot.editMessageText(message, {
-                chat_id: chatId,
-                message_id: messageId,
-                parse_mode: 'Markdown',
-                reply_markup: keyboard
+            const response = await axios.get(`${this.apiBaseUrl}/anime/info/${selectedAnime.id}`, {
+                timeout: 15000
             });
 
+            if (response.data) {
+                this.userAnimeInfo.set(userId, response.data);
+                this.showAnimeDetails(chatId, messageId, userId, response.data);
+            } else {
+                throw new Error('No anime data received');
+            }
         } catch (error) {
-            console.error('❌ Error loading episode info:', error.message);
-            await this.bot.editMessageText('❌ Failed to load episode information. Please try again.', {
+            console.error('Error fetching anime details:', error);
+            this.bot.editMessageText('❌ Error loading anime details. Please try again.', {
                 chat_id: chatId,
                 message_id: messageId,
                 reply_markup: {
-                    inline_keyboard: [[
-                        { text: '🔄 Try Again', callback_data: 'anime_episodes' },
-                        { text: '⬅️ Back', callback_data: 'anime_select' }
-                    ]]
+                    inline_keyboard: [
+                        [{ text: '🔄 Try Again', callback_data: `anime_select_${currentIndex}` }],
+                        [{ text: '⬅️ Back to Results', callback_data: 'anime_back_to_search' }]
+                    ]
                 }
             });
         }
     }
 
-    async handleSubDubSelection(chatId, messageId, userId, format) {
-        const userData = this.userAnimeData.get(userId);
-        if (!userData || !userData.animeInfo) return;
+    showAnimeDetails(chatId, messageId, userId, animeInfo) {
+        const truncateText = (text, maxLength = 600) => {
+            if (!text) return 'No description available.';
+            if (text.length <= maxLength) return text;
+            return text.substring(0, maxLength - 3) + '...';
+        };
 
-        userData.selectedFormat = format;
-        
-        const totalEpisodes = userData.animeInfo.totalEpisodes || userData.animeInfo.episodes.length;
-        
-        const message = `🎯 *Download ${format.toUpperCase()} Episodes*
+        const description = truncateText(animeInfo.description);
+        const genres = animeInfo.genres ? animeInfo.genres.join(', ') : 'N/A';
 
-📺 *Anime:* ${userData.animeInfo.title}
-📊 *Available Episodes:* ${totalEpisodes}
-🎧 *Format:* ${format.toUpperCase()}
+        const caption = `🎌 *${animeInfo.title}*
+${animeInfo.japaneseTitle ? `🇯🇵 ${animeInfo.japaneseTitle}` : ''}
+
+📝 *Description:*
+${description}
+
+📊 *Details:*
+• Type: ${animeInfo.type || 'N/A'}
+• Status: ${animeInfo.status || 'N/A'}
+• Season: ${animeInfo.season || 'N/A'}
+• Episodes: ${animeInfo.totalEpisodes || 'N/A'}
+• Genres: ${genres}
+
+🎭 *Available:*
+${animeInfo.hasSub ? '✅ Subtitled' : '❌ No Subtitles'}
+${animeInfo.hasDub ? '✅ Dubbed' : '❌ No Dub'}`;
+
+        const keyboard = {
+            inline_keyboard: []
+        };
+
+        // Episode selection buttons
+        const episodeButtons = [];
+        if (animeInfo.hasSub) {
+            episodeButtons.push({ text: '📺 Download Sub Episodes', callback_data: 'anime_episodes_sub' });
+        }
+        if (animeInfo.hasDub) {
+            episodeButtons.push({ text: '🎙️ Download Dub Episodes', callback_data: 'anime_episodes_dub' });
+        }
+
+        if (episodeButtons.length > 0) {
+            keyboard.inline_keyboard.push(episodeButtons);
+        }
+
+        // Navigation buttons
+        keyboard.inline_keyboard.push([
+            { text: '⬅️ Back to Results', callback_data: 'anime_back_to_search' },
+            { text: '🏠 Main Menu', callback_data: 'anime_menu' }
+        ]);
+
+        if (animeInfo.image) {
+            this.bot.editMessageMedia({
+                type: 'photo',
+                media: animeInfo.image,
+                caption: caption,
+                parse_mode: 'Markdown'
+            }, {
+                chat_id: chatId,
+                message_id: messageId,
+                reply_markup: keyboard
+            }).catch(error => {
+                // If image fails, send as text
+                this.bot.editMessageText(caption, {
+                    chat_id: chatId,
+                    message_id: messageId,
+                    parse_mode: 'Markdown',
+                    reply_markup: keyboard
+                });
+            });
+        } else {
+            this.bot.editMessageText(caption, {
+                chat_id: chatId,
+                message_id: messageId,
+                parse_mode: 'Markdown',
+                reply_markup: keyboard
+            });
+        }
+    }
+
+    showEpisodeOptions(chatId, messageId, userId, episodeType) {
+        const animeInfo = this.userAnimeInfo.get(userId);
+        if (!animeInfo) return;
+
+        const totalEpisodes = animeInfo.totalEpisodes || animeInfo.episodes?.length || 0;
+        const typeText = episodeType === 'sub' ? 'Subtitled' : 'Dubbed';
+
+        const optionsMessage = `📺 *Episode Download - ${typeText}*
+
+*${animeInfo.title}*
+Available Episodes: *${totalEpisodes}*
 
 📝 *How to specify episodes:*
 • Single episode: \`5\`
-• Episode range: \`1-12\` or \`5-10\`
-• Multiple episodes: \`1,3,5\` or \`1-3,8-10\`
+• Episode range: \`2-8\`
+• Multiple ranges: \`1-3,5-7\`
+• All episodes: \`all\`
 
-Please type the episodes you want to download:`;
+Please enter the episode(s) you want to download:`;
 
-        const keyboard = {
-            inline_keyboard: [
-                [
-                    { text: '⬅️ Back', callback_data: 'anime_episodes' },
-                    { text: '❌ Cancel', callback_data: 'anime_cancel' }
-                ]
-            ]
-        };
+        this.botManager.setUserState(userId, {
+            action: 'episode_input',
+            commandName: 'anime',
+            episodeType: episodeType
+        });
 
-        await this.bot.editMessageText(message, {
+        this.bot.editMessageText(optionsMessage, {
             chat_id: chatId,
             message_id: messageId,
             parse_mode: 'Markdown',
-            reply_markup: keyboard
-        });
-
-        // Set user state to expect episode range input
-        this.manager.setUserState(userId, {
-            commandName: 'anime',
-            step: 'awaiting_episode_range'
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '⬅️ Back to Anime', callback_data: 'anime_back_to_details' }],
+                    [{ text: '❌ Cancel', callback_data: 'anime_menu' }]
+                ]
+            }
         });
     }
 
-    async handleEpisodeRangeInput(chatId, userId, input) {
-        const userData = this.userAnimeData.get(userId);
-        if (!userData || !userData.animeInfo) return;
+    async handleEpisodeInput(chatId, userId, episodeInput, episodeType) {
+        const animeInfo = this.userAnimeInfo.get(userId);
+        if (!animeInfo) return;
 
-        const totalEpisodes = userData.animeInfo.totalEpisodes || userData.animeInfo.episodes.length;
-        
-        try {
-            const episodeNumbers = this.parseEpisodeRange(input, totalEpisodes);
-            
-            if (episodeNumbers.length === 0) {
-                throw new Error('No valid episodes specified');
-            }
+        const totalEpisodes = animeInfo.totalEpisodes || animeInfo.episodes?.length || 0;
+        const episodes = this.parseEpisodeInput(episodeInput, totalEpisodes);
 
-            const confirmMessage = `✅ *Download Confirmation*
-
-📺 *Anime:* ${userData.animeInfo.title}
-🎧 *Format:* ${userData.selectedFormat.toUpperCase()}
-📊 *Episodes to download:* ${episodeNumbers.length} episodes
-📝 *Episodes:* ${episodeNumbers.join(', ')}
-
-⚠️ *Note:* Large downloads may take time. Episodes will be sent individually.
-
-Proceed with download?`;
-
-            const keyboard = {
-                inline_keyboard: [
-                    [
-                        { text: '✅ Start Download', callback_data: `anime_download_${episodeNumbers.join(',')}` },
-                        { text: '❌ Cancel', callback_data: 'anime_cancel' }
-                    ]
-                ]
-            };
-
-            await this.bot.sendMessage(chatId, confirmMessage, {
-                parse_mode: 'Markdown',
-                reply_markup: keyboard
-            });
-
-            // Store episode numbers for download
-            userData.episodeNumbers = episodeNumbers;
-
-        } catch (error) {
-            await this.bot.sendMessage(chatId, `❌ *Invalid episode range:* ${error.message}
-
-Please try again with a valid format:
-• Single episode: \`5\`
-• Episode range: \`1-12\`
-• Multiple episodes: \`1,3,5\``, {
-                parse_mode: 'Markdown',
+        if (episodes.length === 0) {
+            this.bot.sendMessage(chatId, '❌ Invalid episode format. Please try again with a valid format like "5", "2-8", or "all".', {
                 reply_markup: {
-                    inline_keyboard: [[
-                        { text: '🔄 Try Again', callback_data: `anime_${userData.selectedFormat}` },
-                        { text: '❌ Cancel', callback_data: 'anime_cancel' }
-                    ]]
+                    inline_keyboard: [
+                        [{ text: '🔄 Try Again', callback_data: `anime_episodes_${episodeType}` }]
+                    ]
                 }
             });
+            return;
         }
+
+        if (episodes.length > 10) {
+            this.bot.sendMessage(chatId, '⚠️ Too many episodes requested. Please limit to 10 episodes at a time.', {
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: '🔄 Try Again', callback_data: `anime_episodes_${episodeType}` }]
+                    ]
+                }
+            });
+            return;
+        }
+
+        const processingMessage = await this.bot.sendMessage(chatId, `📥 Starting download of ${episodes.length} episode(s)...\n\nThis may take a while depending on the episode size.`);
+
+        await this.downloadEpisodes(chatId, animeInfo, episodes, episodeType, processingMessage.message_id);
+        this.botManager.clearUserState(userId);
     }
 
-    parseEpisodeRange(input, maxEpisodes) {
-        const episodes = new Set();
-        const parts = input.split(',');
+    parseEpisodeInput(input, totalEpisodes) {
+        const episodes = [];
+        
+        if (input.toLowerCase() === 'all') {
+            for (let i = 1; i <= totalEpisodes; i++) {
+                episodes.push(i);
+            }
+            return episodes;
+        }
 
+        const parts = input.split(',');
+        
         for (const part of parts) {
             const trimmed = part.trim();
             
             if (trimmed.includes('-')) {
                 const [start, end] = trimmed.split('-').map(x => parseInt(x.trim()));
-                
-                if (isNaN(start) || isNaN(end) || start < 1 || end > maxEpisodes || start > end) {
-                    throw new Error(`Invalid range: ${trimmed}`);
-                }
-                
-                for (let i = start; i <= end; i++) {
-                    episodes.add(i);
+                if (start && end && start <= end && start > 0 && end <= totalEpisodes) {
+                    for (let i = start; i <= end; i++) {
+                        if (!episodes.includes(i)) {
+                            episodes.push(i);
+                        }
+                    }
                 }
             } else {
-                const episode = parseInt(trimmed);
-                
-                if (isNaN(episode) || episode < 1 || episode > maxEpisodes) {
-                    throw new Error(`Invalid episode: ${trimmed}`);
+                const episodeNum = parseInt(trimmed);
+                if (episodeNum > 0 && episodeNum <= totalEpisodes && !episodes.includes(episodeNum)) {
+                    episodes.push(episodeNum);
                 }
-                
-                episodes.add(episode);
             }
         }
 
-        return Array.from(episodes).sort((a, b) => a - b);
+        return episodes.sort((a, b) => a - b);
     }
 
-    async downloadEpisodes(chatId, userId, episodeNumbers) {
-        const userData = this.userAnimeData.get(userId);
-        if (!userData || !userData.animeInfo) return;
-
-        const statusMsg = await this.bot.sendMessage(chatId, `🎬 *Starting Download*
-
-📺 ${userData.animeInfo.title}
-🎧 Format: ${userData.selectedFormat.toUpperCase()}
-📊 Episodes: ${episodeNumbers.length}
-
-⏳ Preparing downloads...`, {
-            parse_mode: 'Markdown'
-        });
-
+    async downloadEpisodes(chatId, animeInfo, episodes, episodeType, messageId) {
         let successCount = 0;
         let failureCount = 0;
 
-        for (let i = 0; i < episodeNumbers.length; i++) {
-            const episodeNum = episodeNumbers[i];
-            
+        for (let i = 0; i < episodes.length; i++) {
+            const episodeNum = episodes[i];
+            const episode = animeInfo.episodes?.find(ep => ep.number === episodeNum);
+
+            if (!episode) {
+                failureCount++;
+                continue;
+            }
+
             try {
-                await this.bot.editMessageText(`🎬 *Downloading...*
-
-📺 ${userData.animeInfo.title}
-🎧 Format: ${userData.selectedFormat.toUpperCase()}
-📊 Progress: ${i + 1}/${episodeNumbers.length}
-
-⏳ Downloading Episode ${episodeNum}...`, {
+                // Update progress
+                this.bot.editMessageText(`📥 Downloading episode ${episodeNum}... (${i + 1}/${episodes.length})`, {
                     chat_id: chatId,
-                    message_id: statusMsg.message_id,
-                    parse_mode: 'Markdown'
+                    message_id: messageId
                 });
 
-                const episode = userData.animeInfo.episodes.find(ep => ep.number === episodeNum);
-                if (!episode) {
-                    throw new Error(`Episode ${episodeNum} not found`);
+                const sources = await this.getEpisodeSources(episode.id);
+                if (sources && sources.length > 0) {
+                    const bestSource = this.selectBestSource(sources);
+                    await this.downloadAndSendEpisode(chatId, animeInfo, episodeNum, bestSource, episodeType);
+                    successCount++;
+                } else {
+                    failureCount++;
                 }
 
-                const sources = await this.makeRequest(`/anime/sources/${episode.id}`);
-                
-                if (!sources.sources || sources.sources.length === 0) {
-                    throw new Error(`No sources available for episode ${episodeNum}`);
+                // Add delay between downloads to avoid rate limiting
+                if (i < episodes.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 2000));
                 }
-
-                // Get the best quality source
-                const bestSource = sources.sources.reduce((best, current) => {
-                    const qualityOrder = ['1080p', '720p', '480p', '360p'];
-                    const bestIndex = qualityOrder.indexOf(best.quality);
-                    const currentIndex = qualityOrder.indexOf(current.quality);
-                    return currentIndex < bestIndex ? current : best;
-                });
-
-                // Send video to user
-                await this.bot.sendVideo(chatId, bestSource.url, {
-                    caption: `🎬 *${userData.animeInfo.title}*\n📺 Episode ${episodeNum} (${userData.selectedFormat.toUpperCase()})`,
-                    parse_mode: 'Markdown',
-                    supports_streaming: true
-                });
-
-                successCount++;
-
             } catch (error) {
-                console.error(`❌ Error downloading episode ${episodeNum}:`, error.message);
-                
-                await this.bot.sendMessage(chatId, `❌ *Download Failed*
-
-Episode ${episodeNum} could not be downloaded.
-Error: ${error.message}`, {
-                    parse_mode: 'Markdown'
-                });
-
+                console.error(`Error downloading episode ${episodeNum}:`, error);
                 failureCount++;
             }
-
-            // Small delay between downloads
-            await new Promise(resolve => setTimeout(resolve, 1000));
         }
 
-        // Final status message
-        await this.bot.editMessageText(`✅ *Download Complete!*
+        // Final status update
+        const statusMessage = `✅ *Download Complete!*
 
-📺 ${userData.animeInfo.title}
-🎧 Format: ${userData.selectedFormat.toUpperCase()}
+${successCount} episode(s) downloaded successfully
+${failureCount > 0 ? `${failureCount} episode(s) failed` : ''}
 
-📊 *Results:*
-• ✅ Successful: ${successCount}
-• ❌ Failed: ${failureCount}
-• 📱 Total: ${episodeNumbers.length}
+*${animeInfo.title}* - ${episodeType === 'sub' ? 'Subtitled' : 'Dubbed'}`;
 
-${successCount > 0 ? '🎉 Enjoy your anime!' : ''}`, {
+        this.bot.editMessageText(statusMessage, {
             chat_id: chatId,
-            message_id: statusMsg.message_id,
+            message_id: messageId,
             parse_mode: 'Markdown',
             reply_markup: {
-                inline_keyboard: [[
-                    { text: '🔍 Search More', callback_data: 'anime_start' },
-                    { text: '🏠 Main Menu', callback_data: 'show_commands' }
-                ]]
+                inline_keyboard: [
+                    [{ text: '🔍 Search More', callback_data: 'anime_search' }],
+                    [{ text: '🏠 Main Menu', callback_data: 'anime_menu' }]
+                ]
             }
         });
-
-        // Clear user data
-        this.userAnimeData.delete(userId);
     }
 
-    async makeRequest(endpoint) {
-        const url = `${this.baseUrl}${endpoint}`;
+    async getEpisodeSources(episodeId) {
+        try {
+            const response = await axios.get(`${this.apiBaseUrl}/anime/sources/${episodeId}`, {
+                timeout: 10000
+            });
+            return response.data?.sources || [];
+        } catch (error) {
+            console.error('Error fetching episode sources:', error);
+            return [];
+        }
+    }
+
+    selectBestSource(sources) {
+        // Priority order: 720p, 480p, 360p, others
+        const qualityPriority = ['720p', '480p', '360p'];
         
-        const response = await axios.get(url, {
-            timeout: 30000,
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-        });
-
-        return response.data;
+        for (const quality of qualityPriority) {
+            const source = sources.find(s => s.quality === quality);
+            if (source) return source;
+        }
+        
+        return sources[0]; // Return first available if no preferred quality found
     }
 
-    getInfo() {
-        return {
-            name: 'anime',
-            description: 'Search and download anime episodes',
-            version: '1.0.0'
-        };
+    async downloadAndSendEpisode(chatId, animeInfo, episodeNum, source, episodeType) {
+        try {
+            const response = await axios.get(source.url, {
+                responseType: 'stream',
+                timeout: 30000,
+                headers: {
+                    'Referer': 'https://monkey-d-luffy.site/'
+                }
+            });
+
+            const fileName = `${animeInfo.title.replace(/[^a-zA-Z0-9]/g, '_')}_Episode_${episodeNum}_${episodeType}_${source.quality}.mp4`;
+            const caption = `🎌 *${animeInfo.title}*\n📺 Episode ${episodeNum} (${episodeType === 'sub' ? 'Subtitled' : 'Dubbed'})\n📱 Quality: ${source.quality}`;
+
+            await this.bot.sendVideo(chatId, response.data, {
+                caption: caption,
+                parse_mode: 'Markdown',
+                supports_streaming: true
+            }, {
+                filename: fileName,
+                contentType: 'video/mp4'
+            });
+
+        } catch (error) {
+            console.error(`Error downloading/sending episode ${episodeNum}:`, error);
+            
+            // Send error message for this specific episode
+            this.bot.sendMessage(chatId, `❌ Failed to download Episode ${episodeNum}. Source may be unavailable.`);
+        }
     }
 
     async shutdown() {
-        // Clean up any ongoing operations
-        this.userAnimeData.clear();
-        console.log('✅ Anime command shutdown complete');
+        // Clean up any resources if needed
+        this.userSearchResults.clear();
+        this.userAnimeInfo.clear();
+        console.log('🎌 Anime command shutdown complete');
     }
 }
 
